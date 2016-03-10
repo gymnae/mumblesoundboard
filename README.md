@@ -72,12 +72,12 @@ Whenn spinning up a container, make sure to attach your folder:
 ###Recommended: Container linking###
 `gymnae/mumblesoundboard` is designed to run linked to a running mumble server in another docker container. If you decide to do so, please make sure to use the alias `mumble-server`
 
-You can also connect to an external server, then you don't ignore linking
+You can also connect to an external server via an ENV variable, then you don't need linking:
 
 ###Enviroment variables####
 Instead of an `--env-file` you can also pass ENV variables to the `run` command
 
-    mumble_server         = <external mumble server>
+    mumble_server         = <external mumble server if no server linked>
     mumble_server_channel = <defaulting to 'Root'>
     mumble_user           = <defaulting to 'Spammer'>
     mumble_password       = <optional, no default>
