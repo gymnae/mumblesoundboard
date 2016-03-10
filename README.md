@@ -1,7 +1,7 @@
 Mumblesoundboard
 ================
 
-An Alpine based docker image for playing sounds on Mumble Voicechat servers.
+####An Alpine based docker image for playing sounds on Mumble Voicechat servers.
 
 Making use of the following: 
 
@@ -12,7 +12,8 @@ Making use of the following:
  3. File manager: ELfinder - http://elfinder.org/#elf_l1_Lw
  		Copyright (c) 2009-2016, Studio 42
 		All rights reserved.
- 4. Additional web code by #freaks on EFnet
+ 4. Soon: Additional web code by #freaks on EFnet - please see [note](#under-development)
+
 
 
 ----------
@@ -33,14 +34,13 @@ Making use of the following:
 
 ----------
 
-
-##Usage ##
-####Install via Docker####
+##Preparations##
+###Install via Docker###
 
     docker pull gymnae/mumblesoundboard:latest
 
 
-####Prepare folders####
+###Prepare folders###
 Either create a volume
 
     docker volume create --name="<your great name>"
@@ -59,11 +59,7 @@ Just don't use subfolders. `db/` will be filled automatically.
 Whenn spinning up a container, make sure to attach your folder: 
 `-v </path/to/foldername>:/media/msb/`
 
-
-----------
-
-
-###Spin up a container###
+##Spin up a container##
 *Example*
 
     docker run -d -p 3001:80 \
@@ -73,12 +69,12 @@ Whenn spinning up a container, make sure to attach your folder:
     --name gomumblesoundboard \
     gymnae/mumblesoundboard:latest
 
-####Recommended: Container linking####
+###Recommended: Container linking###
 `gymnae/mumblesoundboard` is designed to run linked to a running mumble server in another docker container. If you decide to do so, please make sure to use the alias `mumble-server`
 
 You can also connect to an external server, then you don't ignore linking
 
-####Enviroment variables#####
+###Enviroment variables####
 Instead of an `--env-file` you can also pass ENV variables to the `run` command
 
     mumble_server         = <external mumble server>
@@ -87,26 +83,38 @@ Instead of an `--env-file` you can also pass ENV variables to the `run` command
     mumble_password       = <optional, no default>
     mumble_server_port    = <defaulting to 64738>
 
-####Ports####
+###Ports###
 Internally, the [gomumblesoundboard](https://github.com/robbi5/gomumblesoundboard%20%22gomumblesoundboard) base listens on port 3000 - so you could also `-p 3000:3000` when spinning up the container for direct control of the base
 
-However, the main webserver listens on port 80.
-When spinning up different containers of this image, please remember to change the exterior ports.
+#####[Currently de-funct](#under-development):
 
+>However, the main webserver listens on port 80.
+>When spinning up different containers of this image, please remember to change the exterior ports.
 
 ----------
 
-
-###Usage###
-####Play sounds####
+##Usage##
+###Play sounds###
 Just navigate to `http://<your webserver host>:<external port>` for a controlling web interface.
 
-####Add sounds####
-Navigate to `http://<your webserver host>:<external port>/fm/` to make use of the integrated [elfinder](http://elfinder.org/#elf_l1_Lw "elfinder"). 
+###Add sounds###
+To make use of the integrated [elfinder](http://elfinder.org/#elf_l1_Lw "elfinder") navigate to 
 
-You can upload directly to your [configured](#prepare-folders) persistent storage.
+`http://<your webserver host>:<external port>/fm/` 
 
-In order to make use of newly added sounds we have to call a special script to restart the gomumblesoundboard base, or just restart the container.
+There you directly upload to your [configured](#prepare-folders) persistent storage.
+
+In oder to make use of new sounds you can either restart the container or call the init script:
+
+    docker exec <containername> /init.sh restart
+
+[Soon](#under-develpmoment): 
+Alternatively, we can call a special script to restart the base
 `http://<your webserver host>:<external port>/restart.php`
 
-*(That is a sad workaround, I know)*
+*(That is a sad workaround, I know. But the base doesn't allow a proper reload)*
+
+
+----------
+#####Under development
+This part is currently under development, it will be reactivated once the code is ready. For now, please forward `-p 3000:3000`
