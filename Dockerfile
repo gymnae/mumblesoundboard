@@ -16,7 +16,8 @@
 #
 #
 
-FROM alpine:3.3
+FROM gymnae/alpine-base:latest
+
 MAINTAINER      Gunnar Falk <docker@grundstil.de>
 LABEL Description="This image allows you to use play your sound files in a mumble channel through a client controlled via web interface"
 
