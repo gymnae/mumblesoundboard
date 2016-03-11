@@ -23,13 +23,12 @@ LABEL Description="This image allows you to use play your sound files in a mumbl
 
 # Install dependencies
 RUN set -ex && \
-                apk update && \
                 # packages for gomumblesoundboard
-                apk add --update tmux ffmpeg musl-dev opus go gcc git pkgconf opus-dev \
+                apk add --update tmux ffmpeg musl-dev opus go@community gcc git pkgconf opus-dev \
                 # packages for the web facing side of this image
-                php php-pdo php-sqlite3 php-pdo_sqlite php-fpm php-json php-ctype php-curl php-openssl nginx ca-certificates && \
+                php php-pdo php-sqlite3 php-pdo_sqlite php-fpm php-json php-ctype php-curl php-openssl nginx ca-certificates \
                 # everyone is doing this. why?
-            	rm -rf /var/cache/apk/*
+            	&& rm -rf /var/cache/apk/*
 
 # start getting going (hah)
 WORKDIR /go
