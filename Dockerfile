@@ -26,7 +26,7 @@ RUN set -ex && \
                 # packages for gomumblesoundboard
                 apk add --update tmux ffmpeg musl-dev opus go@community gcc git pkgconf opus-dev \
                 # packages for the web facing side of this image
-                php php-pdo php-sqlite3 php-pdo_sqlite php-fpm php-json php-ctype php-curl php-openssl nginx ca-certificates \
+                php5 php5-pdo php5-sqlite3 php5-pdo_sqlite php5-fpm php5-json php5-ctype php5-curl php5-openssl nginx ca-certificates \
                 # everyone is doing this. why?
             	&& rm -rf /var/cache/apk/*
 
