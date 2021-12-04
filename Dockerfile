@@ -1,4 +1,4 @@
-# Mumble soundboard (MSB)
+# Mumble soundboard (MSB) v2
 # go version
 #
 # This image makes use of the following software:
@@ -6,7 +6,7 @@
 # 1. gomumblesoundboard base by: https://github.com/robbi5/gomumblesoundboard
 #		The MIT License (MIT)
 # 2. Webserver integration inspired by: https://github.com/gigablah/alpine-php
-#		The MIT License (MIT)	
+#		The MIT License (MIT)
 # 3. File manager: ELfinder - http://elfinder.org/#elf_l1_Lw
 # 		Copyright (c) 2009-2016, Studio 42
 #		All rights reserved.
@@ -21,55 +21,39 @@ FROM gymnae/alpine-base:latest
 MAINTAINER      Gunnar Falk <docker@grundstil.de>
 LABEL Description="This image allows you to use play your sound files in a mumble channel through a client controlled via web interface"
 
+#RUN echo https://dl-cdn.alpinelinux.org/alpine/latest-stable/main | tee /etc/apk/repositories \
+#  && echo https://dl-cdn.alpinelinux.org/alpine/latest-stable/community | tee -a /etc/apk/repositories
+
 # Install dependencies
-RUN set -ex && \
+RUN set -ex
                 # packages for gomumblesoundboard
-                apk add --update tmux ffmpeg musl-dev opus go@community gcc git pkgconf opus-dev \
-                # packages for the web facing side of this image
-                php5 php5-pdo php5-sqlite3 php5-pdo_sqlite php5-fpm php5-json php5-ctype php5-curl php5-openssl nginx ca-certificates \
-                # everyone is doing this. why?
-            	&& rm -rf /var/cache/apk/*
+RUN     apk --no-cache add \
+		tmux \
+		ffmpeg \
+		musl-dev \
+		opus \
+		go \
+		opus-dev
 
 # start getting going (hah)
-WORKDIR /go
+RUN adduser -D msb
+USER msb
+WORKDIR /home/msb/
 
-## for gomumblesoundboard
-# Install go dep, download source files, change, and install
-RUN export GOPATH=/go && \
-        go get github.com/tools/godep/ && \
-        git clone https://github.com/robbi5/gomumblesoundboard && \
-        cp bin/godep gomumblesoundboard/ && \
-        rm -R src pkg bin && \
-        chmod 777 gomumblesoundboard && \
-        cd gomumblesoundboard && \
-        ./godep restore &&  \
-        go build
+## get feuerrot's fork of robbi5's gomumblesoundboard
+RUN go get github.com/feuerrot/gomumblesoundboard
 
 #Remove packages for space saving - I'm sure I could squeeze out more
-RUN apk del --update gcc git opus-dev musl-dev pkgconf && \
-        rm -rf /var/cache/apk/*
+#RUN apk --no-cache del git opus-dev musl-dev pkgconf
+        #rm -rf /var/cache/apk/*
 
 ## Mount msb-sounds folder - user action required
 # It's recommended that you mount a host folder or docker volume with sound files.
-# 
+#
 # Your local volume / data container is expected to have /sounds and /db as subfolders
-# mount on docker run: -v <path on host / docker volume>:/media/msb 
+# mount on docker run: -v <path on host / docker volume>:/media/msb
 # put your audio files into /sounds, the /db file can be generated as described above
-VOLUME ["/media/msb/"]
-
-# copy webserver config & content into container
-COPY /webserver/config /
-
-# mount webserver www folder
-VOLUME /opt/www
-
-# copy static copy of setup into container
-# dirt hack maybe, but avoiding complicated download of a new file manager
-COPY /webserver/code /opt/www
-
-# Prepare the script that starts it all
-ADD init.sh /
-RUN chmod +x /init.sh && chmod 777 /init.sh
+VOLUME ["/home/msb/sounds/"]
 
 # define environment variables - default to them if nothing is declared on runtime
 # ENV
@@ -81,13 +65,9 @@ ENV mumble_server=${mumble_server:-$MUMBLE_SERVER_PORT_64738_TCP_ADDR} \
 
 ## Expose the port for the webserver - user action required
 # Call the site with port 3000 for the raw gomumblesoundboard output
-# Start the container with, e.g. -p 3001:80 if other web services are running on the 
-# host 
-EXPOSE 80 3000
-
-#change to gomumblesoundboard for easy command start
-WORKDIR gomumblesoundboard
+# Start the container with, e.g. -p 3001:80 if other web services are running on the
+# host
+EXPOSE 3000
 
 # start
-CMD ["/init.sh"]
-
+CMD [ "sh", "-c", "/home/msb/go/bin/gomumblesoundboard --username $mumble_user --server $mumble_server:$mumble_server_port --insecure --channel $mumble_server_channel --password $mumble_password /home/msb/sounds" ]
