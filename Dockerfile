@@ -41,7 +41,7 @@ USER msb
 WORKDIR /home/msb/
 
 ## get feuerrot's fork of robbi5's gomumblesoundboard
-RUN go get github.com/feuerrot/gomumblesoundboard
+RUN go get github.com/feuerrot/gomumblesoundboard@latest
 
 #Remove packages for space saving - I'm sure I could squeeze out more
 #RUN apk --no-cache del git opus-dev musl-dev pkgconf
