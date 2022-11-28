@@ -41,8 +41,8 @@ USER msb
 WORKDIR /home/msb/
 
 ## get feuerrot's, i mean, foxpanther's fork of feuerrots fork of robbi5's gomumblesoundboard.
-RUN go clean --cache \
-        && go install github.com/foxpanther/gomumblesoundboard
+RUN go clean --cache && go clean -modcache \
+        && go install github.com/foxpanther/gomumblesoundboard@latest
 
 #Remove packages for space saving - I'm sure I could squeeze out more
 #RUN apk --no-cache del git opus-dev musl-dev pkgconf
