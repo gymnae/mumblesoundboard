@@ -1,5 +1,5 @@
 # Mumble soundboard (MSB) v2
-# go version
+# go version.
 #
 # This image makes use of the following software:
 #
