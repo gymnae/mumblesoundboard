@@ -63,6 +63,7 @@ ENV mumble_server=${mumble_server:-$MUMBLE_SERVER_PORT_64738_TCP_ADDR} \
  mumble_server_channel=${mumble_server_channel:-Root} \
  mumble_user=${mumble_user:-spammer} \
  mumble_password=${mumble_password:-}
+ sound_files=${sound_files:-/home/msb/sounds} \
 
 ## Expose the port for the webserver - user action required
 # Call the site with port 3000 for the raw gomumblesoundboard output
@@ -71,4 +72,4 @@ ENV mumble_server=${mumble_server:-$MUMBLE_SERVER_PORT_64738_TCP_ADDR} \
 EXPOSE 3000
 
 # start
-CMD [ "sh", "-c", "/home/msb/go/bin/gomumblesoundboard --username $mumble_user --server $mumble_server:$mumble_server_port --insecure --channel $mumble_server_channel --password $mumble_password" ]
+CMD [ "sh", "-c", "/home/msb/go/bin/gomumblesoundboard --username $mumble_user --server $mumble_server:$mumble_server_port --insecure --channel $mumble_server_channel --password $mumble_password $sound_files" ]
