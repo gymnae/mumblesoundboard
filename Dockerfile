@@ -71,4 +71,4 @@ ENV mumble_server=${mumble_server:-$MUMBLE_SERVER_PORT_64738_TCP_ADDR} \
 EXPOSE 3000
 
 # start
-CMD [ "sh", "-c", "/home/msb/go/bin/gomumblesoundboard --username $mumble_user --server $mumble_server:$mumble_server_port --insecure --channel $mumble_server_channel --password $mumble_password /home/msb/sounds" ]
+CMD [ "sh", "-c", "/home/msb/go/bin/gomumblesoundboard --username $mumble_user --server $mumble_server:$mumble_server_port --insecure --channel $mumble_server_channel --password $mumble_password" ]
