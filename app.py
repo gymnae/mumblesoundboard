@@ -87,21 +87,36 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-    def play_url(self, url):
+def play_url(self, url):
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': 'YouTube Stream', 'link': url}
         
-        # 1. Start yt-dlp (The Source)
+        # Define paths for potential cookie file
+        # We use the /app/data volume so you can drop the file in easily
+        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
+        
+        # Base command
         dlp_cmd = [
             'yt-dlp', 
-            '--no-cache-dir', '--no-warnings', '--force-ipv4', '--no-playlist',
-            '--extractor-args', 'youtube:player_client=android',
+            '--no-cache-dir', '--no-warnings', '--no-playlist',
             '-f', 'bestaudio/best', 
-            '-o', '-', 
-            url
+            '-o', '-'
         ]
+
+        # STRATEGY SWITCHER
+        if os.path.exists(cookie_file):
+            print("[DEBUG] Found cookies.txt! Authenticating...")
+            dlp_cmd.extend(['--cookies', cookie_file])
+        else:
+            print("[DEBUG] No cookies.txt found. Trying TV Client Emulation...")
+            # 'tv' client often has looser bot checks than 'android' or 'web'
+            # We also removed --force-ipv4 to let it try IPv6 if your server has it (often less banned)
+            dlp_cmd.extend(['--extractor-args', 'youtube:player_client=tv'])
+
+        # Add URL last
+        dlp_cmd.append(url)
         
-        # We start yt-dlp and capture its stderr so we can see errors (403, Sign In, etc)
+        # 1. Start yt-dlp
         try:
             p_dlp = subprocess.Popen(
                 dlp_cmd, 
@@ -113,8 +128,7 @@ class AudioEngine:
             print(f"[ERROR] Could not start yt-dlp: {e}")
             return
 
-        # 2. Start ffmpeg (The Sink)
-        # It reads from p_dlp.stdout
+        # 2. Start ffmpeg
         ffmpeg_cmd = [
             'ffmpeg', 
             '-i', 'pipe:0', 
@@ -134,10 +148,7 @@ class AudioEngine:
             p_dlp.kill()
             return
         
-        # Important: Close our copy of the dlp stdout so only ffmpeg holds it
         p_dlp.stdout.close()
-
-        # Attach the dlp process to the ffmpeg process object so we can check it later
         p_ffmpeg.source_proc = p_dlp
 
         with self.lock:
