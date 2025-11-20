@@ -1,7 +1,0 @@
-*.sqlite
-includes/*
-index.php
-msb.php
-restart.php
-sqli*
-index.html
