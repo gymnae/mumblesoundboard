@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>~Soundboard 98~</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            background-color: #000000;
+            color: #00FF00;
+            font-family: "Courier New", Courier, monospace;
+            margin: 0;
+            padding-bottom: 150px;
+            background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg==');
+        }
+        a { color: #FFFF00; }
+        h1 { text-align: center; text-shadow: 2px 2px #FF0000; }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 10px;
+        }
+
+        /* ON AIR INDICATOR STYLES */
+        .status-panel {
+            border: 2px solid #333;
+            background: #111;
+            padding: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .status-lamp {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #330000;
+            border: 2px inset #555;
+            transition: all 0.3s;
+            flex-shrink: 0; /* Prevent shrinking on small screens */
+        }
+        
+        .status-lamp.active {
+            background-color: #FF0000;
+            box-shadow: 0 0 15px #FF0000;
+            border: 2px solid #FFaaaa;
+        }
+
+        .status-text { font-weight: bold; color: #555; white-space: nowrap; }
+        .status-text.active { color: #FF0000; animation: blink 1s infinite; }
+        
+        .track-info {
+            font-size: 12px;
+            color: #00FF00;
+            border: 1px dotted #00FF00;
+            padding: 5px;
+            flex-grow: 1;
+            text-align: center;
+            background: #001100;
+            display: none;
+            word-break: break-all; /* Ensure URL fits */
+        }
+
+        @keyframes blink { 50% { opacity: 0.5; } }
+
+        .toolbar {
+            border: 2px solid #00FF00;
+            background: #000080;
+            padding: 10px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .sound-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        /* --- UPDATED BUTTON STYLE --- */
+        .sound-btn {
+            background: #C0C0C0;
+            border-top: 2px solid #FFFFFF;
+            border-left: 2px solid #FFFFFF;
+            border-right: 2px solid #000000;
+            border-bottom: 2px solid #000000;
+            color: #000000;
+            padding: 10px;
+            
+            /* Size & Layout */
+            width: 140px; 
+            min-height: 60px; /* Ensure buttons have consistent height */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center; /* Center text vertically */
+            
+            /* Text Handling */
+            font-size: 12px;
+            font-weight: bold;
+            text-align: center;
+            line-height: 1.2;
+            
+            /* THE FIX: Force line breaks */
+            word-wrap: break-word;      /* Legacy support */
+            overflow-wrap: break-word;  /* Modern standard */
+            word-break: break-all;      /* Force break even without spaces */
+            
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .sound-btn:active {
+            border-top: 2px solid #000000;
+            border-left: 2px solid #000000;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            background: #A0A0A0;
+            padding-top: 12px; /* Slight visual push down */
+            padding-left: 12px;
+            padding-right: 8px;
+            padding-bottom: 8px;
+        }
+        
+        .play-count { 
+            font-size: 9px; 
+            color: #555; 
+            margin-top: 8px; 
+            font-weight: normal;
+        }
+
+        .control-deck {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: #C0C0C0;
+            border-top: 4px outset #FFFFFF;
+            padding: 10px;
+            color: black;
+            box-shadow: 0px -5px 10px rgba(0,0,0,0.5);
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            z-index: 1000;
+            box-sizing: border-box;
+        }
+
+        .control-group {
+            border: 2px groove white;
+            padding: 5px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .stop-btn {
+            background: #FF0000;
+            color: white;
+            font-weight: bold;
+            border: 3px outset #FFCCCC;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        .stop-btn:active { border-style: inset; }
+
+        .input-retro {
+            border: 2px inset #000000;
+            background: white;
+            padding: 3px;
+            font-family: monospace;
+            width: 200px;
+        }
+        
+        marquee { color: yellow; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <marquee scrollamount="10">*** WELCOME TO THE UNDERGROUND SOUND SYSTEM *** CONNECTED TO MUMBLE ***</marquee>
+
+    <div class="container">
+        <div class="status-panel">
+            <div id="lamp" class="status-lamp"></div>
+            <span id="lamp-text" class="status-text">STANDBY</span>
+            
+            <div id="track-info" class="track-info"></div>
+        </div>
+
+        <h1>Soundboard 2000</h1>
+        <center>
+            <img src="https://web.archive.org/web/20091027075204/http://geocities.com/Area51/Hollow/7224/bar_ani.gif" alt="construction">
+        </center>
+        <br>
+
+        <div class="toolbar">
+            Sort by: 
+            <a href="/?sort=alpha">[A-Z]</a> | 
+            <a href="/?sort=pop">[Most Popular]</a>
+            <br><br>
+            <a href="/stats">[VIEW STATISTICS]</a>
+        </div>
+
+        <div class="sound-grid">
+            {% for sound in files %}
+            <div class="sound-btn" onclick="playSound('{{ sound.name }}')">
+                <span>💿 {{ sound.name }}</span>
+                <span class="play-count">Played: {{ sound.count }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="control-deck">
+        <div class="control-group">
+            <label>VOL:</label>
+            <input type="range" min="0" max="100" value="{{ volume }}" onchange="fetch('/volume/'+this.value)">
+        </div>
+
+        <div class="control-group">
+            <label>URL:</label>
+            <input type="text" id="yt-url" class="input-retro" placeholder="Paste YouTube URL...">
+            <button onclick="playUrl()">PLAY</button>
+        </div>
+
+        <button class="stop-btn" onclick="stopAll()">■ STOP ALL</button>
+    </div>
+
+    <script>
+        function playSound(name) {
+            fetch('/play/' + name);
+            updateStatus({playing: true, meta: {type: 'file', text: name}});
+        }
+
+        function playUrl() {
+            const url = document.getElementById('yt-url').value;
+            if(url) {
+                fetch('/play_url?url=' + encodeURIComponent(url));
+                updateStatus({playing: true, meta: {type: 'url', text: 'YouTube Stream', link: url}});
+                document.getElementById('yt-url').value = '';
+            }
+        }
+
+        function stopAll() {
+            fetch('/stop');
+            updateStatus({playing: false, meta: null});
+        }
+
+        function checkStatus() {
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => updateStatus(data));
+        }
+
+        function updateStatus(data) {
+            const lamp = document.getElementById('lamp');
+            const text = document.getElementById('lamp-text');
+            const info = document.getElementById('track-info');
+            
+            if(data.playing) {
+                lamp.classList.add('active');
+                text.classList.add('active');
+                text.innerText = "ON AIR";
+                
+                info.style.display = 'block';
+                if(data.meta) {
+                    if(data.meta.type === 'url' && data.meta.link) {
+                        info.innerHTML = `PLAYING: <a href="${data.meta.link}" target="_blank">WATCH VIDEO</a>`;
+                    } else {
+                        info.innerHTML = `PLAYING: ${data.meta.text}`;
+                    }
+                } else {
+                    info.innerText = "Processing...";
+                }
+            } else {
+                lamp.classList.remove('active');
+                text.classList.remove('active');
+                text.innerText = "STANDBY";
+                info.style.display = 'none';
+            }
+        }
+
+        setInterval(checkStatus, 1000);
+    </script>
+</body>
+</html>
