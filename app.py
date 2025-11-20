@@ -94,7 +94,7 @@ class AudioEngine:
         # 1. Start yt-dlp (The Source)
         dlp_cmd = [
             'yt-dlp', 
-            '--no-cache-dir', '--no-warnings', '--no-input', '--force-ipv4', '--no-playlist',
+            '--no-cache-dir', '--no-warnings', '--force-ipv4', '--no-playlist',
             '--extractor-args', 'youtube:player_client=android',
             '-f', 'bestaudio/best', 
             '-o', '-', 
