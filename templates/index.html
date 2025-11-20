@@ -40,7 +40,7 @@
             background-color: #330000;
             border: 2px inset #555;
             transition: all 0.3s;
-            flex-shrink: 0; /* Prevent shrinking on small screens */
+            flex-shrink: 0;
         }
         
         .status-lamp.active {
@@ -61,7 +61,7 @@
             text-align: center;
             background: #001100;
             display: none;
-            word-break: break-all; /* Ensure URL fits */
+            word-break: break-all; 
         }
 
         @keyframes blink { 50% { opacity: 0.5; } }
@@ -74,6 +74,16 @@
             margin-bottom: 20px;
         }
 
+        /* --- NEW: SEARCH BOX STYLE --- */
+        .search-box {
+            background: #C0C0C0;
+            border: 2px inset #FFF;
+            padding: 5px;
+            font-family: "Courier New", Courier, monospace;
+            width: 60%;
+            margin-top: 10px;
+        }
+
         .sound-grid {
             display: flex;
             flex-wrap: wrap;
@@ -81,7 +91,6 @@
             justify-content: center;
         }
 
-        /* --- UPDATED BUTTON STYLE --- */
         .sound-btn {
             background: #C0C0C0;
             border-top: 2px solid #FFFFFF;
@@ -90,26 +99,19 @@
             border-bottom: 2px solid #000000;
             color: #000000;
             padding: 10px;
-            
-            /* Size & Layout */
             width: 140px; 
-            min-height: 60px; /* Ensure buttons have consistent height */
+            min-height: 60px; 
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center; /* Center text vertically */
-            
-            /* Text Handling */
+            justify-content: center; 
             font-size: 12px;
             font-weight: bold;
             text-align: center;
             line-height: 1.2;
-            
-            /* THE FIX: Force line breaks */
-            word-wrap: break-word;      /* Legacy support */
-            overflow-wrap: break-word;  /* Modern standard */
-            word-break: break-all;      /* Force break even without spaces */
-            
+            word-wrap: break-word;      
+            overflow-wrap: break-word;  
+            word-break: break-all;      
             cursor: pointer;
             user-select: none;
         }
@@ -120,7 +122,7 @@
             border-right: 2px solid #FFFFFF;
             border-bottom: 2px solid #FFFFFF;
             background: #A0A0A0;
-            padding-top: 12px; /* Slight visual push down */
+            padding-top: 12px; 
             padding-left: 12px;
             padding-right: 8px;
             padding-bottom: 8px;
@@ -189,7 +191,6 @@
         <div class="status-panel">
             <div id="lamp" class="status-lamp"></div>
             <span id="lamp-text" class="status-text">STANDBY</span>
-            
             <div id="track-info" class="track-info"></div>
         </div>
 
@@ -203,14 +204,16 @@
             Sort by: 
             <a href="/?sort=alpha">[A-Z]</a> | 
             <a href="/?sort=pop">[Most Popular]</a>
-            <br><br>
+            <br>
             <a href="/stats">[VIEW STATISTICS]</a>
+            <br><br>
+            <input type="text" id="search-box" class="search-box" placeholder="SEARCH SOUNDS..." onkeyup="filterSounds()">
         </div>
 
         <div class="sound-grid">
             {% for sound in files %}
             <div class="sound-btn" onclick="playSound('{{ sound.name }}')">
-                <span>💿 {{ sound.name }}</span>
+                <span class="sound-name">💿 {{ sound.name }}</span>
                 <span class="play-count">Played: {{ sound.count }}</span>
             </div>
             {% endfor %}
@@ -233,6 +236,18 @@
     </div>
 
     <script>
+        function filterSounds() {
+            const query = document.getElementById('search-box').value.toLowerCase();
+            const buttons = document.getElementsByClassName('sound-btn');
+            
+            for (let btn of buttons) {
+                // Get text from the button
+                const text = btn.innerText.toLowerCase();
+                // Show if matches, Hide if not
+                btn.style.display = text.includes(query) ? 'flex' : 'none';
+            }
+        }
+
         function playSound(name) {
             fetch('/play/' + name);
             updateStatus({playing: true, meta: {type: 'file', text: name}});
