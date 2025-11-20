@@ -35,8 +35,7 @@ from flask import Flask, render_template, request, jsonify
 import pymumble_py3 as pymumble
 from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
 
-# --- FIX 4: SILENCE CONSOLE SPAM ---
-# Disable Werkzeug logging for successful requests (200s)
+# Disable Werkzeug logging for successful requests
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR) 
 
@@ -75,7 +74,6 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- IMPROVED AUDIO ENGINE ---
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
@@ -84,12 +82,8 @@ class AudioEngine:
         self.current_metadata = None 
 
     def play_file(self, filepath, filename):
-        # self.stop_all() # Optional: Uncomment to force single-track only
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
-        
-        # FIX 1 (Quality): Add '-re' to read input at native frame rate.
-        # This prevents ffmpeg from dumping the whole file instantly into the buffer,
-        # which causes jitter/skipping in the mixer.
+        # -re flag reads file at native speed
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd, shell=False)
 
@@ -97,12 +91,10 @@ class AudioEngine:
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': 'YouTube Stream', 'link': url}
         
-        # FIX 3 (YouTube 403):
-        # 1. --extractor-args "youtube:player_client=android" -> Mimics Android app (bypasses many bot checks)
-        # 2. --force-ipv4 -> Often fixes 403s on IPv6 networks
-        # 3. -f bestaudio/best -> Fallback to video if audio stream is locked
+        # FIX: Added --no-cache-dir to prevent permission errors in Docker
+        # FIX: Removed --quiet so we can capture errors if it fails
         cmd = (
-            f'yt-dlp --quiet --no-warnings --force-ipv4 --no-playlist '
+            f'yt-dlp --no-cache-dir --no-warnings --force-ipv4 --no-playlist '
             f'--extractor-args "youtube:player_client=android" '
             f'-f bestaudio/best -o - "{url}" '
             f'| ffmpeg -i pipe:0 -f s16le -ac 1 -ar 48000 -'
@@ -110,14 +102,28 @@ class AudioEngine:
         self._start_process(cmd, shell=True)
 
     def _start_process(self, cmd, shell=False):
+        # FIX: Capture stderr (stderr=subprocess.PIPE) to debug issues
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
-            stderr=subprocess.DEVNULL, # Keep stderr clean
+            stderr=subprocess.PIPE, 
             shell=shell, 
             bufsize=4096,
             preexec_fn=os.setsid 
         )
+        
+        # Check if it died immediately (common with permission errors)
+        try:
+            # Wait a tiny bit to see if it crashes
+            process.wait(timeout=0.1)
+            # If we are here, it finished/crashed in <0.1s
+            if process.returncode != 0:
+                err = process.stderr.read().decode()
+                print(f"[ERROR] Process failed immediately: {err}")
+        except subprocess.TimeoutExpired:
+            # This is good! It's still running.
+            pass
+
         with self.lock:
             self.active_processes.append(process)
 
@@ -126,8 +132,6 @@ class AudioEngine:
         with self.lock:
             for p in self.active_processes:
                 try:
-                    # FIX 2 (Stop Button): Use SIGKILL (9) instead of SIGTERM (15)
-                    # And kill the Process Group (pgid) to get the shell + ffmpeg + yt-dlp
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                 except (ProcessLookupError, AttributeError, OSError):
                     pass
@@ -137,11 +141,9 @@ class AudioEngine:
         self.volume = max(0.0, min(1.0, float(vol) / 100.0))
 
     def get_chunk(self):
-        # FIX 1 (Quality): Ensure chunk size is exact for 20ms @ 48kHz
         CHUNK_SIZE = 960 * 2 
         mixed_audio = [0] * 960
         
-        # COPY list to avoid holding lock during reading
         with self.lock:
             if not self.active_processes:
                 self.current_metadata = None
@@ -152,11 +154,16 @@ class AudioEngine:
         
         for p in current_procs:
             if p.poll() is not None:
+                # If it finished, check if it had an error
+                if p.returncode != 0:
+                    # Read stderr to see what happened
+                    try:
+                        err = p.stderr.read().decode('utf-8', errors='ignore')
+                        if err.strip(): print(f"[STREAM ERROR] {err.strip()}")
+                    except: pass
                 continue 
             
             try:
-                # Non-blocking read is hard with pipes, so we rely on ffmpeg -re (files)
-                # or natural streaming speed (youtube) to not block too long.
                 raw = p.stdout.read(CHUNK_SIZE)
                 if raw and len(raw) == CHUNK_SIZE:
                     samples = struct.unpack(f"<{len(raw)//2}h", raw)
@@ -164,25 +171,21 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
-                    # Stream ended or broken
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                     except: pass
             except Exception:
                 pass
 
-        # Cleanup dead processes from the main list
         with self.lock:
             self.active_processes = [p for p in self.active_processes if p in active_now]
 
         if not active_now:
             return None
 
-        # Clip and Pack
         final_bytes = bytearray()
         for sample in mixed_audio:
             val = int(sample * self.volume)
-            # Hard Clip to avoid overflow wrapping (which sounds like horrible static)
             val = max(-32768, min(32767, val))
             final_bytes += struct.pack("<h", val)
             
@@ -190,24 +193,16 @@ class AudioEngine:
 
 audio_engine = AudioEngine()
 
-# --- Mumble Bot Thread ---
-# --- Mumble Bot Thread (FIXED) ---
 def mumble_loop():
     print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
     mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-    
-    # FIX: Manually initialize this attribute to prevent AttributeError
     mumble.server_max_bandwidth = None 
-    
     mumble.start()
     mumble.is_ready()
     print("[MUMBLE] Connected.")
 
-    # FIX: Set Quality safely
     try:
-        # Set Bandwidth to ~96kbps (Music Quality)
         mumble.set_bandwidth(96000)
-        print("[MUMBLE] Audio quality set to High (96kbps)")
     except Exception as e:
         print(f"[MUMBLE] Warning: Could not set high bandwidth: {e}")
 
@@ -226,7 +221,6 @@ def mumble_loop():
         else:
             print(f"[MUMBLE] Channel '{CHANNEL}' not found. Staying in Root.")
 
-    # Main Audio Loop
     next_tick = time.time()
     
     while True:
@@ -234,7 +228,6 @@ def mumble_loop():
         if pcm_chunk:
             mumble.sound_output.add_sound(pcm_chunk)
         
-        # Precision Timing Logic
         next_tick += PYMUMBLE_AUDIO_PER_PACKET
         sleep_time = next_tick - time.time()
         if sleep_time > 0:
@@ -242,10 +235,8 @@ def mumble_loop():
         else:
             next_tick = time.time()
 
-
 threading.Thread(target=mumble_loop, daemon=True).start()
 
-# --- Flask Routes ---
 @app.route('/')
 def index():
     sort_type = request.args.get('sort', 'alpha')
@@ -315,4 +306,3 @@ def view_stats():
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=5000, debug=False)
-
