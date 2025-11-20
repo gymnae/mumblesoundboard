@@ -74,6 +74,7 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
+# --- UPDATED AUDIO ENGINE (Split Process Version) ---
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
@@ -83,47 +84,76 @@ class AudioEngine:
 
     def play_file(self, filepath, filename):
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
-        # -re flag reads file at native speed
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-        self._start_process(cmd, shell=False)
+        self._start_process(cmd)
 
     def play_url(self, url):
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': 'YouTube Stream', 'link': url}
         
-        # FIX: Added --no-cache-dir to prevent permission errors in Docker
-        # FIX: Removed --quiet so we can capture errors if it fails
-        cmd = (
-            f'yt-dlp --no-cache-dir --no-warnings --force-ipv4 --no-playlist '
-            f'--extractor-args "youtube:player_client=android" '
-            f'-f bestaudio/best -o - "{url}" '
-            f'| ffmpeg -i pipe:0 -f s16le -ac 1 -ar 48000 -'
-        )
-        self._start_process(cmd, shell=True)
+        # 1. Start yt-dlp (The Source)
+        dlp_cmd = [
+            'yt-dlp', 
+            '--no-cache-dir', '--no-warnings', '--no-input', '--force-ipv4', '--no-playlist',
+            '--extractor-args', 'youtube:player_client=android',
+            '-f', 'bestaudio/best', 
+            '-o', '-', 
+            url
+        ]
+        
+        # We start yt-dlp and capture its stderr so we can see errors (403, Sign In, etc)
+        try:
+            p_dlp = subprocess.Popen(
+                dlp_cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                preexec_fn=os.setsid
+            )
+        except Exception as e:
+            print(f"[ERROR] Could not start yt-dlp: {e}")
+            return
 
-    def _start_process(self, cmd, shell=False):
-        # FIX: Capture stderr (stderr=subprocess.PIPE) to debug issues
+        # 2. Start ffmpeg (The Sink)
+        # It reads from p_dlp.stdout
+        ffmpeg_cmd = [
+            'ffmpeg', 
+            '-i', 'pipe:0', 
+            '-f', 's16le', '-ac', '1', '-ar', '48000', '-'
+        ]
+        
+        try:
+            p_ffmpeg = subprocess.Popen(
+                ffmpeg_cmd, 
+                stdin=p_dlp.stdout, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid
+            )
+        except Exception as e:
+            print(f"[ERROR] Could not start ffmpeg: {e}")
+            p_dlp.kill()
+            return
+        
+        # Important: Close our copy of the dlp stdout so only ffmpeg holds it
+        p_dlp.stdout.close()
+
+        # Attach the dlp process to the ffmpeg process object so we can check it later
+        p_ffmpeg.source_proc = p_dlp
+
+        with self.lock:
+            self.active_processes.append(p_ffmpeg)
+
+    def _start_process(self, cmd):
+        # Helper for local files only
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            shell=shell, 
-            bufsize=4096,
+            stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid 
         )
+        # Local files don't have a source_proc
+        process.source_proc = None
         
-        # Check if it died immediately (common with permission errors)
-        try:
-            # Wait a tiny bit to see if it crashes
-            process.wait(timeout=0.1)
-            # If we are here, it finished/crashed in <0.1s
-            if process.returncode != 0:
-                err = process.stderr.read().decode()
-                print(f"[ERROR] Process failed immediately: {err}")
-        except subprocess.TimeoutExpired:
-            # This is good! It's still running.
-            pass
-
         with self.lock:
             self.active_processes.append(process)
 
@@ -131,10 +161,16 @@ class AudioEngine:
         self.current_metadata = None
         with self.lock:
             for p in self.active_processes:
+                # Kill ffmpeg
                 try:
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except (ProcessLookupError, AttributeError, OSError):
-                    pass
+                except: pass
+                
+                # Kill the associated yt-dlp if it exists
+                if getattr(p, 'source_proc', None):
+                    try:
+                        os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
+                    except: pass
             self.active_processes = []
 
     def set_volume(self, vol):
@@ -154,13 +190,12 @@ class AudioEngine:
         
         for p in current_procs:
             if p.poll() is not None:
-                # If it finished, check if it had an error
-                if p.returncode != 0:
-                    # Read stderr to see what happened
-                    try:
-                        err = p.stderr.read().decode('utf-8', errors='ignore')
-                        if err.strip(): print(f"[STREAM ERROR] {err.strip()}")
-                    except: pass
+                # Process finished. Check if it had an error source.
+                if getattr(p, 'source_proc', None):
+                    # Check if yt-dlp exited with error
+                    if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
+                        err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
+                        if err: print(f"[YOUTUBE ERROR] {err.strip()}")
                 continue 
             
             try:
@@ -171,11 +206,22 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
+                    # Stream ended. Check for errors immediately.
+                    if getattr(p, 'source_proc', None):
+                         # Give yt-dlp a split second to flush stderr
+                         time.sleep(0.1)
+                         if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
+                             err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
+                             if err: print(f"[YOUTUBE ERROR] {err.strip()}")
+
+                    # Cleanup
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                        if getattr(p, 'source_proc', None):
+                            os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
                     except: pass
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[STREAM EXCEPTION] {e}")
 
         with self.lock:
             self.active_processes = [p for p in self.active_processes if p in active_now]
