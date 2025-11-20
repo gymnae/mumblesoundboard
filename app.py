@@ -87,7 +87,7 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-def play_url(self, url):
+    def play_url(self, url):
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': 'YouTube Stream', 'link': url}
         
