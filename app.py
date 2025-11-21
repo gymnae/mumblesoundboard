@@ -47,7 +47,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
-# --- SSL MONKEY PATCH ---
 if not hasattr(ssl, 'wrap_socket'):
     def dummy_wrap_socket(sock, keyfile=None, certfile=None,
                           server_side=False, cert_reqs=ssl.CERT_NONE,
@@ -83,14 +82,21 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- URL LOGIC ---
+# --- HELPER: Background Log Reader to prevent Deadlocks ---
+def monitor_process_output(proc, prefix):
+    """Reads stderr from a process in a thread to prevent buffer deadlocks"""
+    for line in iter(proc.stderr.readline, b''):
+        line_str = line.decode('utf-8', errors='ignore').strip()
+        if line_str:
+            print(f"[{prefix}] {line_str}")
+    proc.stderr.close()
+
 def get_clean_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match:
         video_id = match.group(1)
-        # Invidious URL with local=true to force proxying
         clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}&local=true"
         
         try:
@@ -98,7 +104,7 @@ def get_clean_video_data(url):
                 'yt-dlp', '--get-title', '--no-warnings', 
                 '--add-header', AUTH_HEADER,
                 '--user-agent', USER_AGENT,
-                # FORCE GENERIC: Prevents yt-dlp from switching to [youtube] extractor for metadata too
+                '--no-check-certificate', # Just in case of SSL issues internally
                 '--allowed-extractors', 'generic', 
                 clean_url
             ]
@@ -129,34 +135,39 @@ class AudioEngine:
         
         dlp_cmd = [
             'yt-dlp', 
-            '--no-cache-dir', '--no-warnings', '--no-playlist',
-            
-            # --- AUTH & HEADERS ---
+            '--no-cache-dir', 
+            # We REMOVE --no-warnings so we can see what's happening in the logs
+            '--no-playlist',
             '--add-header', AUTH_HEADER,
             '--user-agent', USER_AGENT,
             '--referer', f"{INVIDIOUS_HOST}/",
-            
-            # --- CRITICAL FIX: FORBID YOUTUBE EXTRACTOR ---
-            # This tells yt-dlp: "Only use the generic HTML5 extractor. 
-            # Do NOT use the specific YouTube extractor even if you see a YouTube link."
             '--allowed-extractors', 'generic',
-            
+            '--no-check-certificate',
             '-f', 'bestaudio/best', 
             '-o', '-'
         ]
 
         dlp_cmd.append(url)
         
+        # Debug: print the exact command so you can test it manually if needed
+        # print(f"[CMD] {' '.join(dlp_cmd)}")
+
         try:
             p_dlp = subprocess.Popen(
                 dlp_cmd, 
                 stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
+                stderr=subprocess.PIPE, # Capture stderr for the monitor thread
                 preexec_fn=os.setsid
             )
         except Exception as e:
             print(f"[ERROR] Could not start yt-dlp: {e}")
             return
+
+        # START MONITOR THREAD
+        # This reads the logs in the background, preventing the deadlock
+        t = threading.Thread(target=monitor_process_output, args=(p_dlp, "YT-DLP"))
+        t.daemon = True
+        t.start()
 
         ffmpeg_cmd = [
             'ffmpeg', 
@@ -199,24 +210,15 @@ class AudioEngine:
     def stop_all(self):
         self.current_metadata = None
         with self.lock:
-            # Iterate over a COPY of the list to avoid modification issues
             for p in self.active_processes[:]: 
-                # 1. Kill the ffmpeg process group
                 try:
-                    if p.pid:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except Exception: 
-                    pass
+                    if p.pid: os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception: pass
                 
-                # 2. Kill the source (yt-dlp) process group if it exists
                 source = getattr(p, 'source_proc', None)
                 if source and source.pid:
-                    try:
-                        os.killpg(os.getpgid(source.pid), signal.SIGKILL)
-                    except Exception: 
-                        pass
-            
-            # Clear list immediately
+                    try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
+                    except Exception: pass
             self.active_processes = []
 
     def set_volume(self, vol):
@@ -235,14 +237,8 @@ class AudioEngine:
         active_now = []
         
         for p in current_procs:
-            # Check if ffmpeg died
             if p.poll() is not None:
-                # Check if yt-dlp had an error
-                source = getattr(p, 'source_proc', None)
-                if source:
-                    if source.poll() is not None and source.returncode != 0:
-                        err = source.stderr.read().decode('utf-8', errors='ignore')
-                        if err: print(f"[INVIDIOUS ERROR] {err.strip()}")
+                # Process died. The monitor thread handles logging, so we just skip.
                 continue 
             
             try:
@@ -253,7 +249,7 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
-                    # Stream ended/broken. Kill immediately.
+                    # Stream ended
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                         source = getattr(p, 'source_proc', None)
