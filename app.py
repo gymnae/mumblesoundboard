@@ -3,34 +3,12 @@ import threading
 import logging
 import re
 import base64
-
-# --- MONKEY PATCH FOR PYTHON 3.13 COMPATIBILITY ---
-if not hasattr(ssl, 'wrap_socket'):
-    def dummy_wrap_socket(sock, keyfile=None, certfile=None,
-                          server_side=False, cert_reqs=ssl.CERT_NONE,
-                          ssl_version=ssl.PROTOCOL_TLS, ca_certs=None,
-                          do_handshake_on_connect=True,
-                          suppress_ragged_eofs=True,
-                          ciphers=None):
-        context = ssl.SSLContext(ssl_version)
-        if certfile or keyfile:
-            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-        if ca_certs:
-            context.load_verify_locations(ca_certs)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        return context.wrap_socket(sock, server_side=server_side,
-                                   do_handshake_on_connect=do_handshake_on_connect,
-                                   suppress_ragged_eofs=suppress_ragged_eofs)
-    ssl.wrap_socket = dummy_wrap_socket
-# --------------------------------------------------
-
+import signal
+import struct
+import subprocess
 import os
 import time
 import sqlite3
-import subprocess
-import struct
-import signal
 import warnings
 from flask import Flask, render_template, request, jsonify
 
@@ -54,12 +32,9 @@ INVIDIOUS_HOST = "https://tube.wxbu.de"
 INVIDIOUS_USER = "tube"
 INVIDIOUS_PASS = "tube"
 
-# Basic Auth Header
 auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
 b64_auth = base64.b64encode(auth_str.encode()).decode()
 AUTH_HEADER = f"Authorization: Basic {b64_auth}"
-
-# Browser Headers to prevent 403s
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +46,26 @@ os.makedirs(SOUNDS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
+
+# --- SSL MONKEY PATCH ---
+if not hasattr(ssl, 'wrap_socket'):
+    def dummy_wrap_socket(sock, keyfile=None, certfile=None,
+                          server_side=False, cert_reqs=ssl.CERT_NONE,
+                          ssl_version=ssl.PROTOCOL_TLS, ca_certs=None,
+                          do_handshake_on_connect=True,
+                          suppress_ragged_eofs=True,
+                          ciphers=None):
+        context = ssl.SSLContext(ssl_version)
+        if certfile or keyfile:
+            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+        if ca_certs:
+            context.load_verify_locations(ca_certs)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context.wrap_socket(sock, server_side=server_side,
+                                   do_handshake_on_connect=do_handshake_on_connect,
+                                   suppress_ragged_eofs=suppress_ragged_eofs)
+    ssl.wrap_socket = dummy_wrap_socket
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -88,27 +83,23 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- INVIDIOUS STRICT LOGIC ---
+# --- URL LOGIC ---
 def get_clean_video_data(url):
-    # Extract ID
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match:
         video_id = match.group(1)
-        
-        # STRICT RULE: Use Invidious URL.
-        # append &local=true to force the stream through the instance (keeps Auth valid)
-        # instead of redirecting to Google (where Auth fails)
+        # Invidious URL with local=true to force proxying
         clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}&local=true"
         
         try:
             cmd = [
-                'yt-dlp', 
-                '--get-title', 
-                '--no-warnings', 
+                'yt-dlp', '--get-title', '--no-warnings', 
                 '--add-header', AUTH_HEADER,
                 '--user-agent', USER_AGENT,
+                # FORCE GENERIC: Prevents yt-dlp from switching to [youtube] extractor for metadata too
+                '--allowed-extractors', 'generic', 
                 clean_url
             ]
             title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
@@ -136,32 +127,23 @@ class AudioEngine:
         print(f"[DEBUG] Playing Invidious URL: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
-        
-        # Configure yt-dlp to act like a Browser hitting Invidious
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', '--no-warnings', '--no-playlist',
             
-            # 1. Pass Basic Auth
+            # --- AUTH & HEADERS ---
             '--add-header', AUTH_HEADER,
-            
-            # 2. Mimic Browser User-Agent
             '--user-agent', USER_AGENT,
-            
-            # 3. Set Referer to the instance (some configs require this)
             '--referer', f"{INVIDIOUS_HOST}/",
+            
+            # --- CRITICAL FIX: FORBID YOUTUBE EXTRACTOR ---
+            # This tells yt-dlp: "Only use the generic HTML5 extractor. 
+            # Do NOT use the specific YouTube extractor even if you see a YouTube link."
+            '--allowed-extractors', 'generic',
             
             '-f', 'bestaudio/best', 
             '-o', '-'
         ]
-
-        # We remove the "youtube:player_client" args because we aren't 
-        # talking to YouTube anymore; we are talking to Invidious.
-
-        if os.path.exists(cookie_file):
-            # Cookies might still help if Invidious passes them through
-            dlp_cmd.extend(['--cookies', cookie_file])
 
         dlp_cmd.append(url)
         
@@ -192,7 +174,8 @@ class AudioEngine:
             )
         except Exception as e:
             print(f"[ERROR] Could not start ffmpeg: {e}")
-            p_dlp.kill()
+            try: os.killpg(os.getpgid(p_dlp.pid), signal.SIGKILL)
+            except: pass
             return
         
         p_dlp.stdout.close()
@@ -216,15 +199,24 @@ class AudioEngine:
     def stop_all(self):
         self.current_metadata = None
         with self.lock:
-            for p in self.active_processes:
+            # Iterate over a COPY of the list to avoid modification issues
+            for p in self.active_processes[:]: 
+                # 1. Kill the ffmpeg process group
                 try:
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except: pass
+                    if p.pid:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception: 
+                    pass
                 
-                if getattr(p, 'source_proc', None):
+                # 2. Kill the source (yt-dlp) process group if it exists
+                source = getattr(p, 'source_proc', None)
+                if source and source.pid:
                     try:
-                        os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
-                    except: pass
+                        os.killpg(os.getpgid(source.pid), signal.SIGKILL)
+                    except Exception: 
+                        pass
+            
+            # Clear list immediately
             self.active_processes = []
 
     def set_volume(self, vol):
@@ -243,10 +235,13 @@ class AudioEngine:
         active_now = []
         
         for p in current_procs:
+            # Check if ffmpeg died
             if p.poll() is not None:
-                if getattr(p, 'source_proc', None):
-                    if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
-                        err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
+                # Check if yt-dlp had an error
+                source = getattr(p, 'source_proc', None)
+                if source:
+                    if source.poll() is not None and source.returncode != 0:
+                        err = source.stderr.read().decode('utf-8', errors='ignore')
                         if err: print(f"[INVIDIOUS ERROR] {err.strip()}")
                 continue 
             
@@ -258,19 +253,14 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
-                    if getattr(p, 'source_proc', None):
-                         time.sleep(0.1)
-                         if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
-                             err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
-                             if err: print(f"[INVIDIOUS ERROR] {err.strip()}")
-
+                    # Stream ended/broken. Kill immediately.
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                        if getattr(p, 'source_proc', None):
-                            os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
+                        source = getattr(p, 'source_proc', None)
+                        if source: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
                     except: pass
             except Exception as e:
-                print(f"[STREAM EXCEPTION] {e}")
+                pass
 
         with self.lock:
             self.active_processes = [p for p in self.active_processes if p in active_now]
