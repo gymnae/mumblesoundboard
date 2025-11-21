@@ -1,7 +1,8 @@
 import ssl
 import threading
 import logging
-import re  # NEW: For URL regex matching
+import re
+import base64 # NEW: For Basic Auth encoding
 
 # --- MONKEY PATCH FOR PYTHON 3.13 COMPATIBILITY ---
 if not hasattr(ssl, 'wrap_socket'):
@@ -47,7 +48,16 @@ PORT = int(os.getenv("MUMBLE_PORT", 64738))
 USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
-INVIDIOUS_HOST = "https://tube.wxbu.de" # NEW: Define the proxy instance
+
+# --- INVIDIOUS CONFIGURATION ---
+INVIDIOUS_HOST = "https://tube.wxbu.de"
+INVIDIOUS_USER = "tube"
+INVIDIOUS_PASS = "tube"
+
+# Generate Basic Auth Header (Authorization: Basic base64String)
+auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
+b64_auth = base64.b64encode(auth_str.encode()).decode()
+AUTH_HEADER = f"Authorization: Basic {b64_auth}"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -75,32 +85,31 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- NEW HELPER: Extract ID and Rewrite URL ---
+# --- HELPER: Extract ID and Rewrite URL ---
 def get_clean_video_data(url):
-    # Regex to find the 11-char Video ID from various YouTube formats
-    # Matches: youtube.com/watch?v=, youtu.be/, embed/, etc.
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match:
         video_id = match.group(1)
-        # Goal 1: Rewrite to Invidious URL
         clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}"
         
-        # Goal 2: Get Title for Stats
         try:
-            # We ask yt-dlp to just print the title (--get-title)
-            # We use the NEW clean_url so we hit the proxy, not YouTube directly
-            cmd = ['yt-dlp', '--get-title', '--no-warnings', clean_url]
+            # Pass Auth Header to get-title command
+            cmd = [
+                'yt-dlp', 
+                '--get-title', 
+                '--no-warnings', 
+                '--add-header', AUTH_HEADER, # <--- Added Auth
+                clean_url
+            ]
             title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
-            # Fallback if title is empty
             if not title: title = f"YouTube ID: {video_id}"
         except:
             title = f"YouTube ID: {video_id}"
             
         return clean_url, f"YouTube: {title}"
     
-    # If it's not a standard YouTube link, return as is (maybe it's a direct MP3 url?)
     return url, "External URL"
 
 class AudioEngine:
@@ -119,15 +128,25 @@ class AudioEngine:
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        # Using the rewritten URL (tube.wxbu.de) usually requires less "anti-bot" flags
-        # But we keep generic flags just in case.
+        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
+        
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', '--no-warnings', '--no-playlist',
+            # Add Basic Auth Header for Invidious
+            '--add-header', AUTH_HEADER, # <--- Added Auth
             '-f', 'bestaudio/best', 
-            '-o', '-', 
-            url
+            '-o', '-'
         ]
+
+        if os.path.exists(cookie_file):
+            print("[DEBUG] Found cookies.txt! Authenticating...")
+            dlp_cmd.extend(['--cookies', cookie_file])
+        else:
+            print("[DEBUG] No cookies.txt found. Trying TV Client Emulation...")
+            dlp_cmd.extend(['--extractor-args', 'youtube:player_client=tv'])
+
+        dlp_cmd.append(url)
         
         try:
             p_dlp = subprocess.Popen(
@@ -326,18 +345,12 @@ def play(filename):
         return "Playing", 200
     return "File not found", 404
 
-# --- UPDATED ROUTE ---
 @app.route('/play_url')
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        # 1. Transform URL and Fetch Title
         clean_url, title = get_clean_video_data(raw_url)
-        
-        # 2. Play using the clean (Invidious) URL, but passing the title for metadata
         audio_engine.play_url(clean_url, display_title=title)
-        
-        # 3. Update stats with the specific title
         update_stat(title)
         return "Playing URL", 200
     return "No URL", 400
