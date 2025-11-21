@@ -30,13 +30,11 @@ USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
-# --- INVIDIOUS CONFIGURATION (OPTIONAL) ---
-# If these are empty, the bot will default to using standard yt-dlp (Direct YouTube)
+# --- INVIDIOUS CONFIGURATION ---
 INVIDIOUS_HOST = "https://tube.wxbu.de" 
 INVIDIOUS_USER = "tube"
 INVIDIOUS_PASS = "tube"
 
-# Setup Auth Header if credentials exist
 FFMPEG_HEADERS = ""
 AUTH_HEADER_VAL = ""
 if INVIDIOUS_USER and INVIDIOUS_PASS:
@@ -55,6 +53,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
+# --- SSL PATCH ---
 if not hasattr(ssl, 'wrap_socket'):
     def dummy_wrap_socket(sock, keyfile=None, certfile=None,
                           server_side=False, cert_reqs=ssl.CERT_NONE,
@@ -92,23 +91,14 @@ def get_stats():
 
 # --- ROBUST URL RESOLVER ---
 def resolve_video_data(url):
-    """
-    Strategy:
-    1. Check if it's YouTube.
-    2. If Invidious Configured -> Try API.
-       - Success: Return Direct Stream URL (is_direct=True)
-       - Fail/Error: Fallback to Step 3.
-    3. Default -> Return Original URL (is_direct=False) for yt-dlp to handle.
-    """
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
-    # Only attempt API logic if it's a YouTube link AND Invidious is configured
     if match and INVIDIOUS_HOST:
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        print(f"[DEBUG] Attempting Invidious API: {api_url}")
+        print(f"[DEBUG] Querying API: {api_url}")
         
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
@@ -120,47 +110,44 @@ def resolve_video_data(url):
             
             title = data.get('title', f"YouTube ID: {video_id}")
             
-            # Parse Audio Streams
             audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
             audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
             
-            stream_url = None
+            itag = None
             if audio_formats:
-                stream_url = audio_formats[0]['url']
+                itag = audio_formats[0].get('itag')
             else:
-                # Fallback to mixed
                 mixed = data.get('formatStreams', [])
-                if mixed: stream_url = mixed[0]['url']
+                if mixed: itag = mixed[0].get('itag')
             
-            if stream_url:
-                return stream_url, f"YouTube: {title}", True
+            if itag:
+                proxy_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
+                return proxy_url, f"YouTube: {title}", True
             else:
-                print("[API WARNING] No audio streams found in API response. Falling back.")
+                print("[API WARNING] No itag found. Falling back.")
                 
         except Exception as e:
-            print(f"[API FAIL] Invidious unreachable or error: {e}. Falling back to standard yt-dlp.")
-            # Fall through to return original URL below
+            print(f"[API FAIL] {e}")
 
-    # FALLBACK / DEFAULT BEHAVIOR
-    # Returns original URL, Generic Title, is_direct=False
-    # This triggers audio_engine.play_via_ytdlp()
     return url, "External Stream", False
 
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
-        self.volume = 0.5
+        # --- DUAL VOLUMES ---
+        self.volume_local = 1.0   # 100%
+        self.volume_remote = 0.75 # 75% (Background Music)
         self.lock = threading.Lock()
         self.current_metadata = None 
 
     def play_file(self, filepath, filename):
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-        self._start_process(cmd)
+        # Tag as LOCAL
+        self._start_process(cmd, source_type='local')
 
     def play_direct_stream(self, url, display_title):
-        """Plays a direct URL (from Invidious API) using ffmpeg only."""
-        print(f"[DEBUG] Playing Direct Stream via Invidious: {display_title}")
+        print(f"[DEBUG] FFMPEG Connecting to: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cmd = ['ffmpeg']
@@ -168,14 +155,13 @@ class AudioEngine:
              cmd.extend(['-headers', FFMPEG_HEADERS])
              
         cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
-        self._start_process(cmd)
+        # Tag as REMOTE
+        self._start_process(cmd, capture_stderr=True, source_type='remote')
 
     def play_via_ytdlp(self, url, display_title):
-        """Fallback: uses yt-dlp for YouTube (if API failed) or non-YouTube sites"""
-        print(f"[DEBUG] Playing via standard yt-dlp: {url}")
+        print(f"[DEBUG] Fallback yt-dlp: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        # Check for cookies if falling back to yt-dlp (useful for standard YouTube)
         cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
         dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-']
         
@@ -201,17 +187,33 @@ class AudioEngine:
         
         p_dlp.stdout.close()
         p_ffmpeg.source_proc = p_dlp 
+        
+        # Tag as REMOTE
+        p_ffmpeg.source_type = 'remote' 
+        
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
-    def _start_process(self, cmd):
+    def _start_process(self, cmd, capture_stderr=False, source_type='local'):
+        stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
+        
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_dest,
             preexec_fn=os.setsid 
         )
         process.source_proc = None
+        process.source_type = source_type # Store type on the process object
+        
+        if capture_stderr:
+            def log_errors(proc):
+                for line in iter(proc.stderr.readline, b''):
+                    print(f"[FFMPEG ERROR] {line.decode('utf-8', errors='ignore').strip()}")
+                proc.stderr.close()
+            t = threading.Thread(target=log_errors, args=(process,), daemon=True)
+            t.start()
+        
         with self.lock:
             self.active_processes.append(process)
 
@@ -228,8 +230,12 @@ class AudioEngine:
                     except: pass
             self.active_processes = []
 
-    def set_volume(self, vol):
-        self.volume = max(0.0, min(1.0, float(vol) / 100.0))
+    # --- NEW VOLUME SETTERS ---
+    def set_volume_local(self, vol):
+        self.volume_local = max(0.0, min(1.0, float(vol) / 100.0))
+
+    def set_volume_remote(self, vol):
+        self.volume_remote = max(0.0, min(1.0, float(vol) / 100.0))
 
     def get_chunk(self):
         CHUNK_SIZE = 960 * 2 
@@ -250,8 +256,15 @@ class AudioEngine:
                 raw = p.stdout.read(CHUNK_SIZE)
                 if raw and len(raw) == CHUNK_SIZE:
                     samples = struct.unpack(f"<{len(raw)//2}h", raw)
+                    
+                    # --- APPLY SOURCE-SPECIFIC VOLUME ---
+                    current_vol = self.volume_local if getattr(p, 'source_type', 'local') == 'local' else self.volume_remote
+                    
                     for i, sample in enumerate(samples):
-                        mixed_audio[i] += sample
+                        # Apply the specific volume for this stream
+                        val = int(sample * current_vol)
+                        mixed_audio[i] += val
+                        
                     active_now.append(p)
                 else:
                     try:
@@ -269,8 +282,8 @@ class AudioEngine:
 
         final_bytes = bytearray()
         for sample in mixed_audio:
-            val = int(sample * self.volume)
-            val = max(-32768, min(32767, val))
+            # Hard clip the final mix
+            val = max(-32768, min(32767, sample))
             final_bytes += struct.pack("<h", val)
             
         return bytes(final_bytes)
@@ -324,7 +337,11 @@ def index():
                 files.append({ 'name': f, 'count': stats.get(f, 0) })
     if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
     else: files.sort(key=lambda x: x['name'])
-    return render_template('index.html', files=files, volume=int(audio_engine.volume * 100))
+    
+    return render_template('index.html', 
+                         files=files, 
+                         vol_local=int(audio_engine.volume_local * 100),
+                         vol_remote=int(audio_engine.volume_remote * 100))
 
 @app.route('/play/<path:filename>')
 def play(filename):
@@ -340,18 +357,12 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        # 1. Resolve URL (Invidious API -> Fallback to Original)
         stream_url, title, is_direct = resolve_video_data(raw_url)
-        
         if stream_url:
             if is_direct:
-                # Direct Stream from Invidious API (Auth headers handled here)
                 audio_engine.play_direct_stream(stream_url, title)
             else:
-                # Fallback: Use standard yt-dlp (Handles YouTube directly if Invidious failed)
-                # Also handles Soundcloud, Twitch, etc.
                 audio_engine.play_via_ytdlp(stream_url, title)
-                
             update_stat(title)
             return "Playing URL", 200
         else:
@@ -363,10 +374,16 @@ def stop():
     audio_engine.stop_all()
     return "Stopped", 200
 
-@app.route('/volume/<int:vol>')
-def set_volume(vol):
-    audio_engine.set_volume(vol)
-    return "Volume Set", 200
+# --- NEW ROUTES FOR DUAL VOLUME ---
+@app.route('/volume/local/<int:vol>')
+def set_volume_local(vol):
+    audio_engine.set_volume_local(vol)
+    return "Local Volume Set", 200
+
+@app.route('/volume/remote/<int:vol>')
+def set_volume_remote(vol):
+    audio_engine.set_volume_remote(vol)
+    return "Remote Volume Set", 200
 
 @app.route('/status')
 def get_status():
