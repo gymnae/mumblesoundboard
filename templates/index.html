@@ -268,9 +268,13 @@
         }
 
         function checkStatus() {
+            // 1. Stop polling if the user isn't looking at the tab
+            if (document.hidden) return;
+
             fetch('/status')
                 .then(r => r.json())
-                .then(data => updateStatus(data));
+                .then(data => updateStatus(data))
+                .catch(e => console.debug("Poller error (ignored)")); // Use debug to keep console clean
         }
 
         function updateStatus(data) {
@@ -301,6 +305,7 @@
             }
         }
 
+        // Check status every 1000ms (1 second)
         setInterval(checkStatus, 1000);
     </script>
 </body>
