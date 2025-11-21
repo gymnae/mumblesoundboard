@@ -30,16 +30,20 @@ USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
-# --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = "https://tube.wxbu.de"
+# --- INVIDIOUS CONFIGURATION (OPTIONAL) ---
+# If these are empty, the bot will default to using standard yt-dlp (Direct YouTube)
+INVIDIOUS_HOST = "https://tube.wxbu.de" 
 INVIDIOUS_USER = "tube"
 INVIDIOUS_PASS = "tube"
 
-auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
-b64_auth = base64.b64encode(auth_str.encode()).decode()
-AUTH_HEADER_VAL = f"Basic {b64_auth}"
-# FFmpeg expects headers in a specific format: "Key: Value\r\n"
-FFMPEG_HEADERS = f"Authorization: {AUTH_HEADER_VAL}\r\n"
+# Setup Auth Header if credentials exist
+FFMPEG_HEADERS = ""
+AUTH_HEADER_VAL = ""
+if INVIDIOUS_USER and INVIDIOUS_PASS:
+    auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
+    b64_auth = base64.b64encode(auth_str.encode()).decode()
+    AUTH_HEADER_VAL = f"Basic {b64_auth}"
+    FFMPEG_HEADERS = f"Authorization: {AUTH_HEADER_VAL}\r\n"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -86,54 +90,60 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- DIRECT INVIDIOUS API LOGIC ---
+# --- ROBUST URL RESOLVER ---
 def resolve_video_data(url):
     """
-    Determines if URL is YouTube. 
-    If YES: Hits Invidious API -> Returns (Direct Audio URL, Title, is_direct=True)
-    If NO: Returns (Original URL, 'External URL', is_direct=False)
+    Strategy:
+    1. Check if it's YouTube.
+    2. If Invidious Configured -> Try API.
+       - Success: Return Direct Stream URL (is_direct=True)
+       - Fail/Error: Fallback to Step 3.
+    3. Default -> Return Original URL (is_direct=False) for yt-dlp to handle.
     """
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
-    if match:
+    # Only attempt API logic if it's a YouTube link AND Invidious is configured
+    if match and INVIDIOUS_HOST:
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # 1. Query API
+        print(f"[DEBUG] Attempting Invidious API: {api_url}")
+        
         req = urllib.request.Request(api_url)
-        req.add_header("Authorization", AUTH_HEADER_VAL)
+        if AUTH_HEADER_VAL:
+            req.add_header("Authorization", AUTH_HEADER_VAL)
         
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
             
             title = data.get('title', f"YouTube ID: {video_id}")
             
-            # 2. Find Best Audio Stream
-            # Check 'adaptiveFormats' first (usually separates audio/video)
+            # Parse Audio Streams
             audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-            
-            # Sort by bitrate (highest first)
             audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
             
             stream_url = None
             if audio_formats:
                 stream_url = audio_formats[0]['url']
             else:
-                # Fallback to mixed formats
+                # Fallback to mixed
                 mixed = data.get('formatStreams', [])
                 if mixed: stream_url = mixed[0]['url']
             
             if stream_url:
                 return stream_url, f"YouTube: {title}", True
             else:
-                return None, "Error: No stream found", False
+                print("[API WARNING] No audio streams found in API response. Falling back.")
                 
         except Exception as e:
-            print(f"[API ERROR] {e}")
-            return None, f"API Error: {e}", False
+            print(f"[API FAIL] Invidious unreachable or error: {e}. Falling back to standard yt-dlp.")
+            # Fall through to return original URL below
 
+    # FALLBACK / DEFAULT BEHAVIOR
+    # Returns original URL, Generic Title, is_direct=False
+    # This triggers audio_engine.play_via_ytdlp()
     return url, "External Stream", False
 
 class AudioEngine:
@@ -150,24 +160,29 @@ class AudioEngine:
 
     def play_direct_stream(self, url, display_title):
         """Plays a direct URL (from Invidious API) using ffmpeg only."""
-        print(f"[DEBUG] Playing Direct Stream: {display_title}")
+        print(f"[DEBUG] Playing Direct Stream via Invidious: {display_title}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        # FFmpeg connects directly. We pass headers for Auth.
-        cmd = [
-            'ffmpeg',
-            '-headers', FFMPEG_HEADERS,
-            '-i', url,
-            '-f', 's16le', '-ac', '1', '-ar', '48000', '-'
-        ]
+        cmd = ['ffmpeg']
+        if FFMPEG_HEADERS:
+             cmd.extend(['-headers', FFMPEG_HEADERS])
+             
+        cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
         self._start_process(cmd)
 
     def play_via_ytdlp(self, url, display_title):
-        """Legacy fallback for non-YouTube URLs"""
-        print(f"[DEBUG] Playing External URL via yt-dlp: {url}")
+        """Fallback: uses yt-dlp for YouTube (if API failed) or non-YouTube sites"""
+        print(f"[DEBUG] Playing via standard yt-dlp: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-', url]
+        # Check for cookies if falling back to yt-dlp (useful for standard YouTube)
+        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
+        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-']
+        
+        if os.path.exists(cookie_file):
+             dlp_cmd.extend(['--cookies', cookie_file])
+             
+        dlp_cmd.append(url)
 
         try:
             p_dlp = subprocess.Popen(dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
@@ -185,12 +200,11 @@ class AudioEngine:
             return
         
         p_dlp.stdout.close()
-        p_ffmpeg.source_proc = p_dlp # Attach for tracking
+        p_ffmpeg.source_proc = p_dlp 
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
     def _start_process(self, cmd):
-        # Common starter for ffmpeg-only commands (files or direct streams)
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
@@ -326,15 +340,16 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        # 1. Resolve URL (API or Fallback)
+        # 1. Resolve URL (Invidious API -> Fallback to Original)
         stream_url, title, is_direct = resolve_video_data(raw_url)
         
         if stream_url:
             if is_direct:
-                # 2a. Play via FFmpeg Direct (Invidious)
+                # Direct Stream from Invidious API (Auth headers handled here)
                 audio_engine.play_direct_stream(stream_url, title)
             else:
-                # 2b. Play via yt-dlp (Generic Sites)
+                # Fallback: Use standard yt-dlp (Handles YouTube directly if Invidious failed)
+                # Also handles Soundcloud, Twitch, etc.
                 audio_engine.play_via_ytdlp(stream_url, title)
                 
             update_stat(title)
