@@ -1,6 +1,7 @@
 import ssl
 import threading
 import logging
+import re  # NEW: For URL regex matching
 
 # --- MONKEY PATCH FOR PYTHON 3.13 COMPATIBILITY ---
 if not hasattr(ssl, 'wrap_socket'):
@@ -35,7 +36,6 @@ from flask import Flask, render_template, request, jsonify
 import pymumble_py3 as pymumble
 from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
 
-# Disable Werkzeug logging for successful requests
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR) 
 
@@ -47,6 +47,7 @@ PORT = int(os.getenv("MUMBLE_PORT", 64738))
 USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
+INVIDIOUS_HOST = "https://tube.wxbu.de" # NEW: Define the proxy instance
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -74,7 +75,34 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- UPDATED AUDIO ENGINE (Split Process Version) ---
+# --- NEW HELPER: Extract ID and Rewrite URL ---
+def get_clean_video_data(url):
+    # Regex to find the 11-char Video ID from various YouTube formats
+    # Matches: youtube.com/watch?v=, youtu.be/, embed/, etc.
+    youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
+    match = re.search(youtube_regex, url)
+    
+    if match:
+        video_id = match.group(1)
+        # Goal 1: Rewrite to Invidious URL
+        clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}"
+        
+        # Goal 2: Get Title for Stats
+        try:
+            # We ask yt-dlp to just print the title (--get-title)
+            # We use the NEW clean_url so we hit the proxy, not YouTube directly
+            cmd = ['yt-dlp', '--get-title', '--no-warnings', clean_url]
+            title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
+            # Fallback if title is empty
+            if not title: title = f"YouTube ID: {video_id}"
+        except:
+            title = f"YouTube ID: {video_id}"
+            
+        return clean_url, f"YouTube: {title}"
+    
+    # If it's not a standard YouTube link, return as is (maybe it's a direct MP3 url?)
+    return url, "External URL"
+
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
@@ -87,36 +115,20 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-    def play_url(self, url):
+    def play_url(self, url, display_title="YouTube Stream"):
         print(f"[DEBUG] Playing URL: {url}")
-        self.current_metadata = {'type': 'url', 'text': 'YouTube Stream', 'link': url}
+        self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        # Define paths for potential cookie file
-        # We use the /app/data volume so you can drop the file in easily
-        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
-        
-        # Base command
+        # Using the rewritten URL (tube.wxbu.de) usually requires less "anti-bot" flags
+        # But we keep generic flags just in case.
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', '--no-warnings', '--no-playlist',
             '-f', 'bestaudio/best', 
-            '-o', '-'
+            '-o', '-', 
+            url
         ]
-
-        # STRATEGY SWITCHER
-        if os.path.exists(cookie_file):
-            print("[DEBUG] Found cookies.txt! Authenticating...")
-            dlp_cmd.extend(['--cookies', cookie_file])
-        else:
-            print("[DEBUG] No cookies.txt found. Trying TV Client Emulation...")
-            # 'tv' client often has looser bot checks than 'android' or 'web'
-            # We also removed --force-ipv4 to let it try IPv6 if your server has it (often less banned)
-            dlp_cmd.extend(['--extractor-args', 'youtube:player_client=tv'])
-
-        # Add URL last
-        dlp_cmd.append(url)
         
-        # 1. Start yt-dlp
         try:
             p_dlp = subprocess.Popen(
                 dlp_cmd, 
@@ -128,7 +140,6 @@ class AudioEngine:
             print(f"[ERROR] Could not start yt-dlp: {e}")
             return
 
-        # 2. Start ffmpeg
         ffmpeg_cmd = [
             'ffmpeg', 
             '-i', 'pipe:0', 
@@ -155,14 +166,12 @@ class AudioEngine:
             self.active_processes.append(p_ffmpeg)
 
     def _start_process(self, cmd):
-        # Helper for local files only
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
             stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid 
         )
-        # Local files don't have a source_proc
         process.source_proc = None
         
         with self.lock:
@@ -172,12 +181,10 @@ class AudioEngine:
         self.current_metadata = None
         with self.lock:
             for p in self.active_processes:
-                # Kill ffmpeg
                 try:
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                 except: pass
                 
-                # Kill the associated yt-dlp if it exists
                 if getattr(p, 'source_proc', None):
                     try:
                         os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
@@ -201,9 +208,7 @@ class AudioEngine:
         
         for p in current_procs:
             if p.poll() is not None:
-                # Process finished. Check if it had an error source.
                 if getattr(p, 'source_proc', None):
-                    # Check if yt-dlp exited with error
                     if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
                         err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
                         if err: print(f"[YOUTUBE ERROR] {err.strip()}")
@@ -217,15 +222,12 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
-                    # Stream ended. Check for errors immediately.
                     if getattr(p, 'source_proc', None):
-                         # Give yt-dlp a split second to flush stderr
                          time.sleep(0.1)
                          if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
                              err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
                              if err: print(f"[YOUTUBE ERROR] {err.strip()}")
 
-                    # Cleanup
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                         if getattr(p, 'source_proc', None):
@@ -324,12 +326,19 @@ def play(filename):
         return "Playing", 200
     return "File not found", 404
 
+# --- UPDATED ROUTE ---
 @app.route('/play_url')
 def play_external_url():
-    url = request.args.get('url')
-    if url:
-        audio_engine.play_url(url)
-        update_stat("YOUTUBE_LINK")
+    raw_url = request.args.get('url')
+    if raw_url:
+        # 1. Transform URL and Fetch Title
+        clean_url, title = get_clean_video_data(raw_url)
+        
+        # 2. Play using the clean (Invidious) URL, but passing the title for metadata
+        audio_engine.play_url(clean_url, display_title=title)
+        
+        # 3. Update stats with the specific title
+        update_stat(title)
         return "Playing URL", 200
     return "No URL", 400
 
@@ -354,7 +363,7 @@ def get_status():
 @app.route('/stats')
 def view_stats():
     stats = get_stats()
-    html = "<h1>Statistics</h1><table border='1'><tr><th>File</th><th>Plays</th></tr>"
+    html = "<h1>Statistics</h1><table border='1'><tr><th>File / Video</th><th>Plays</th></tr>"
     for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True):
         html += f"<tr><td>{k}</td><td>{v}</td></tr>"
     html += "</table><br><a href='/'>Back</a>"
