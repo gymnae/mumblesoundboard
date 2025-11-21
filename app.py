@@ -3,25 +3,6 @@ import threading
 import logging
 import re
 import base64
-import urllib.request
-import urllib.parse
-import json
-import os
-import time
-import sqlite3
-import subprocess
-import struct
-import signal
-import warnings
-from flask import Flask, render_template, request, jsonify
-
-import pymumble_py3 as pymumble
-from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
-
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR) 
-
-warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
 
 # --- MONKEY PATCH FOR PYTHON 3.13 COMPATIBILITY ---
 if not hasattr(ssl, 'wrap_socket'):
@@ -42,27 +23,44 @@ if not hasattr(ssl, 'wrap_socket'):
                                    do_handshake_on_connect=do_handshake_on_connect,
                                    suppress_ragged_eofs=suppress_ragged_eofs)
     ssl.wrap_socket = dummy_wrap_socket
+# --------------------------------------------------
 
-# --- CONFIGURATION ---
+import os
+import time
+import sqlite3
+import subprocess
+import struct
+import signal
+import warnings
+from flask import Flask, render_template, request, jsonify
+
+import pymumble_py3 as pymumble
+from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR) 
+
+warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
+
+# Configuration
 HOST = os.getenv("MUMBLE_HOST", "localhost")
 PORT = int(os.getenv("MUMBLE_PORT", 64738))
 USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST") 
-INVIDIOUS_USER = os.getenv("INVIDIOUS_USER")
-INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS")
+# --- INVIDIOUS CONFIGURATION ---
+INVIDIOUS_HOST = "https://tube.wxbu.de"
+INVIDIOUS_USER = "tube"
+INVIDIOUS_PASS = "tube"
 
-# --- AUTH HEADER LOGIC ---
-AUTH_CLI_PARAM = None 
-AUTH_VAL = None       
+# Basic Auth Header
+auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
+b64_auth = base64.b64encode(auth_str.encode()).decode()
+AUTH_HEADER = f"Authorization: Basic {b64_auth}"
 
-if INVIDIOUS_USER and INVIDIOUS_PASS:
-    auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
-    b64_auth = base64.b64encode(auth_str.encode()).decode()
-    AUTH_VAL = f"Basic {b64_auth}"             
-    AUTH_CLI_PARAM = f"Authorization: {AUTH_VAL}" 
+# Browser Headers to prevent 403s
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -74,7 +72,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
-# --- DATABASE ---
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS stats (filename TEXT PRIMARY KEY, count INTEGER)')
@@ -91,78 +88,37 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- HELPER: Extract YouTube ID ---
-def extract_video_id(url):
+# --- INVIDIOUS STRICT LOGIC ---
+def get_clean_video_data(url):
+    # Extract ID
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
-    return match.group(1) if match else None
-
-# --- HELPER: Invidious Proxy Resolver ---
-def resolve_invidious_data(video_id):
-    if not INVIDIOUS_HOST:
-        return None, None
-
-    # Request "local=true" to tell Invidious to proxy the traffic
-    api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}?local=true"
     
-    try:
-        req = urllib.request.Request(api_url)
-        if AUTH_VAL:
-            req.add_header("Authorization", AUTH_VAL)
+    if match:
+        video_id = match.group(1)
         
-        with urllib.request.urlopen(req) as response:
-            data = json.load(response)
-            title = data.get('title', f"YouTube ID: {video_id}")
+        # STRICT RULE: Use Invidious URL.
+        # append &local=true to force the stream through the instance (keeps Auth valid)
+        # instead of redirecting to Google (where Auth fails)
+        clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}&local=true"
+        
+        try:
+            cmd = [
+                'yt-dlp', 
+                '--get-title', 
+                '--no-warnings', 
+                '--add-header', AUTH_HEADER,
+                '--user-agent', USER_AGENT,
+                clean_url
+            ]
+            title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
+            if not title: title = f"YouTube ID: {video_id}"
+        except:
+            title = f"YouTube ID: {video_id}"
             
-            best_url = None
-
-            def is_safe_proxy_url(u):
-                if not u: return False
-                # STRICT: Reject direct Google links
-                if "googlevideo.com" in u: return False
-                # Accept if it matches our Invidious Host OR is a relative path
-                if INVIDIOUS_HOST in u or u.startswith("/"): return True
-                return False
-
-            # 1. Check Progressive Streams (formatStreams)
-            for fmt in data.get('formatStreams', []):
-                u = fmt.get('url', '')
-                if is_safe_proxy_url(u):
-                    best_url = u
-                    break 
-            
-            # 2. Check Adaptive Streams (adaptiveFormats)
-            if not best_url:
-                for fmt in data.get('adaptiveFormats', []):
-                    # Prefer audio streams
-                    if 'audio' in fmt.get('type', '') and is_safe_proxy_url(fmt.get('url', '')):
-                        best_url = fmt.get('url')
-                        break
-
-            # 3. NEW: Check DASH / HLS Manifests
-            # These are often generated locally by Invidious even if streams aren't
-            if not best_url:
-                dash_url = data.get('dashUrl', '')
-                hls_url = data.get('hlsUrl', '')
-                
-                if is_safe_proxy_url(dash_url):
-                    print("[DEBUG] Using Invidious DASH Manifest")
-                    best_url = dash_url
-                elif is_safe_proxy_url(hls_url):
-                    print("[DEBUG] Using Invidious HLS Manifest")
-                    best_url = hls_url
-
-            if best_url:
-                if best_url.startswith("/"):
-                    best_url = urllib.parse.urljoin(INVIDIOUS_HOST, best_url)
-                return best_url, f"YouTube: {title}"
-            else:
-                print("[PROXY ERROR] Invidious returned only direct Google links. Proxying not enabled on this instance?")
-                return None, None
-
-    except Exception as e:
-        print(f"[API ERROR] Failed to resolve via Invidious: {e}")
-        return None, None
+        return clean_url, f"YouTube: {title}"
+    
+    return url, "External URL"
 
 class AudioEngine:
     def __init__(self):
@@ -176,38 +132,36 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-    def play_url(self, url, display_title="YouTube Stream", is_raw_stream=False):
-        print(f"[DEBUG] Playing URL: {url}")
+    def play_url(self, url, display_title="YouTube Stream"):
+        print(f"[DEBUG] Playing Invidious URL: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
         
+        # Configure yt-dlp to act like a Browser hitting Invidious
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', '--no-warnings', '--no-playlist',
+            
+            # 1. Pass Basic Auth
+            '--add-header', AUTH_HEADER,
+            
+            # 2. Mimic Browser User-Agent
+            '--user-agent', USER_AGENT,
+            
+            # 3. Set Referer to the instance (some configs require this)
+            '--referer', f"{INVIDIOUS_HOST}/",
+            
             '-f', 'bestaudio/best', 
             '-o', '-'
         ]
 
-        if AUTH_CLI_PARAM:
-            dlp_cmd.extend(['--add-header', AUTH_CLI_PARAM])
+        # We remove the "youtube:player_client" args because we aren't 
+        # talking to YouTube anymore; we are talking to Invidious.
 
-        # STRICT PROXY LOGIC
-        if is_raw_stream:
-            # We are downloading a direct file/stream from Invidious.
-            # No cookies/emulation needed.
-            pass 
-        elif INVIDIOUS_HOST:
-            # Should not happen if resolve_invidious_data works, 
-            # but acts as a safety catch.
-            print("[DEBUG] Using Invidious URL directly...")
-            pass
-        elif os.path.exists(cookie_file):
-            print("[DEBUG] Found cookies.txt! Authenticating...")
+        if os.path.exists(cookie_file):
+            # Cookies might still help if Invidious passes them through
             dlp_cmd.extend(['--cookies', cookie_file])
-        else:
-            print("[DEBUG] Standard YouTube Direct. Using TV Emulation...")
-            dlp_cmd.extend(['--extractor-args', 'youtube:player_client=tv'])
 
         dlp_cmd.append(url)
         
@@ -293,7 +247,7 @@ class AudioEngine:
                 if getattr(p, 'source_proc', None):
                     if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
                         err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
-                        if err: print(f"[YOUTUBE ERROR] {err.strip()}")
+                        if err: print(f"[INVIDIOUS ERROR] {err.strip()}")
                 continue 
             
             try:
@@ -308,7 +262,7 @@ class AudioEngine:
                          time.sleep(0.1)
                          if p.source_proc.poll() is not None and p.source_proc.returncode != 0:
                              err = p.source_proc.stderr.read().decode('utf-8', errors='ignore')
-                             if err: print(f"[YOUTUBE ERROR] {err.strip()}")
+                             if err: print(f"[INVIDIOUS ERROR] {err.strip()}")
 
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -412,26 +366,10 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        video_id = extract_video_id(raw_url)
-        
-        if video_id and INVIDIOUS_HOST:
-            stream_url, title = resolve_invidious_data(video_id)
-            
-            if stream_url:
-                audio_engine.play_url(stream_url, display_title=title, is_raw_stream=True)
-                update_stat(title)
-                return "Playing Invidious Proxy Stream", 200
-            else:
-                print("[ERROR] Could not resolve a proxy stream from Invidious.")
-                return "Proxy Resolution Failed - Check Server Logs", 500
-
-        if not INVIDIOUS_HOST:
-             if video_id:
-                print("[INFO] No Invidious Host configured. Using Direct YouTube.")
-                audio_engine.play_url(raw_url, display_title=f"YouTube ID: {video_id}", is_raw_stream=False)
-                update_stat(f"YouTube: {video_id}")
-                return "Playing Standard Stream", 200
-            
+        clean_url, title = get_clean_video_data(raw_url)
+        audio_engine.play_url(clean_url, display_title=title)
+        update_stat(title)
+        return "Playing URL", 200
     return "No URL", 400
 
 @app.route('/stop')
