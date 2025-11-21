@@ -9,7 +9,7 @@
             color: #00FF00;
             font-family: "Courier New", Courier, monospace;
             margin: 0;
-            padding-bottom: 150px;
+            padding-bottom: 180px; /* Increased padding for taller footer */
             background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg==');
         }
         a { color: #FFFF00; }
@@ -21,7 +21,6 @@
             padding: 10px;
         }
 
-        /* ON AIR INDICATOR STYLES */
         .status-panel {
             border: 2px solid #333;
             background: #111;
@@ -74,7 +73,6 @@
             margin-bottom: 20px;
         }
 
-        /* --- NEW: SEARCH BOX STYLE --- */
         .search-box {
             background: #C0C0C0;
             border: 2px inset #FFF;
@@ -158,8 +156,15 @@
             border: 2px groove white;
             padding: 5px;
             display: flex;
+            flex-direction: column; /* Stack label and slider */
             align-items: center;
-            gap: 5px;
+            gap: 2px;
+            min-width: 100px;
+        }
+        
+        .control-group label {
+            font-size: 10px;
+            font-weight: bold;
         }
 
         .stop-btn {
@@ -169,6 +174,7 @@
             border: 3px outset #FFCCCC;
             padding: 10px 20px;
             cursor: pointer;
+            height: 50px;
         }
         .stop-btn:active { border-style: inset; }
 
@@ -222,11 +228,16 @@
 
     <div class="control-deck">
         <div class="control-group">
-            <label>VOL:</label>
-            <input type="range" min="0" max="100" value="{{ volume }}" onchange="fetch('/volume/'+this.value)">
+            <label>SFX VOL (Local)</label>
+            <input type="range" min="0" max="100" value="{{ vol_local }}" onchange="setLocalVolume(this.value)" title="Local Files Volume">
         </div>
 
         <div class="control-group">
+            <label>BGM VOL (Web)</label>
+            <input type="range" min="0" max="100" value="{{ vol_remote }}" onchange="setRemoteVolume(this.value)" title="YouTube/Web Volume">
+        </div>
+
+        <div class="control-group" style="flex-direction: row;">
             <label>URL:</label>
             <input type="text" id="yt-url" class="input-retro" placeholder="Paste YouTube URL...">
             <button onclick="playUrl()">PLAY</button>
@@ -239,11 +250,8 @@
         function filterSounds() {
             const query = document.getElementById('search-box').value.toLowerCase();
             const buttons = document.getElementsByClassName('sound-btn');
-            
             for (let btn of buttons) {
-                // Get text from the button
                 const text = btn.innerText.toLowerCase();
-                // Show if matches, Hide if not
                 btn.style.display = text.includes(query) ? 'flex' : 'none';
             }
         }
@@ -267,14 +275,21 @@
             updateStatus({playing: false, meta: null});
         }
 
-        function checkStatus() {
-            // 1. Stop polling if the user isn't looking at the tab
-            if (document.hidden) return;
+        // --- NEW VOLUME FUNCTIONS ---
+        function setLocalVolume(val) {
+            fetch('/volume/local/' + val);
+        }
 
+        function setRemoteVolume(val) {
+            fetch('/volume/remote/' + val);
+        }
+
+        function checkStatus() {
+            if (document.hidden) return;
             fetch('/status')
                 .then(r => r.json())
                 .then(data => updateStatus(data))
-                .catch(e => console.debug("Poller error (ignored)")); // Use debug to keep console clean
+                .catch(e => console.debug("Poller error (ignored)"));
         }
 
         function updateStatus(data) {
@@ -305,7 +320,6 @@
             }
         }
 
-        // Check status every 1000ms (1 second)
         setInterval(checkStatus, 1000);
     </script>
 </body>
