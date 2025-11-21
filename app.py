@@ -10,6 +10,9 @@ import os
 import time
 import sqlite3
 import warnings
+import json
+import urllib.request
+import urllib.error
 from flask import Flask, render_template, request, jsonify
 
 import pymumble_py3 as pymumble
@@ -34,8 +37,9 @@ INVIDIOUS_PASS = "tube"
 
 auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
 b64_auth = base64.b64encode(auth_str.encode()).decode()
-AUTH_HEADER = f"Authorization: Basic {b64_auth}"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+AUTH_HEADER_VAL = f"Basic {b64_auth}"
+# FFmpeg expects headers in a specific format: "Key: Value\r\n"
+FFMPEG_HEADERS = f"Authorization: {AUTH_HEADER_VAL}\r\n"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -47,7 +51,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
-# --- SSL MONKEY PATCH ---
 if not hasattr(ssl, 'wrap_socket'):
     def dummy_wrap_socket(sock, keyfile=None, certfile=None,
                           server_side=False, cert_reqs=ssl.CERT_NONE,
@@ -83,41 +86,55 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- HELPER: Background Log Reader ---
-def monitor_process_output(proc, prefix):
-    """Reads stderr from a process in a thread to prevent buffer deadlocks"""
-    for line in iter(proc.stderr.readline, b''):
-        line_str = line.decode('utf-8', errors='ignore').strip()
-        if line_str:
-            print(f"[{prefix}] {line_str}")
-    proc.stderr.close()
-
-# --- URL LOGIC ---
-def get_clean_video_data(url):
+# --- DIRECT INVIDIOUS API LOGIC ---
+def resolve_video_data(url):
+    """
+    Determines if URL is YouTube. 
+    If YES: Hits Invidious API -> Returns (Direct Audio URL, Title, is_direct=True)
+    If NO: Returns (Original URL, 'External URL', is_direct=False)
+    """
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match:
         video_id = match.group(1)
-        clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}&local=true"
+        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
+        
+        # 1. Query API
+        req = urllib.request.Request(api_url)
+        req.add_header("Authorization", AUTH_HEADER_VAL)
         
         try:
-            cmd = [
-                'yt-dlp', '--get-title', '--no-warnings', 
-                '--add-header', AUTH_HEADER,
-                '--user-agent', USER_AGENT,
-                '--no-check-certificate',
-                # Use generic: prefix to force generic extractor
-                f"generic:{clean_url}"
-            ]
-            title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
-            if not title: title = f"YouTube ID: {video_id}"
-        except:
-            title = f"YouTube ID: {video_id}"
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
             
-        return clean_url, f"YouTube: {title}"
-    
-    return url, "External URL"
+            title = data.get('title', f"YouTube ID: {video_id}")
+            
+            # 2. Find Best Audio Stream
+            # Check 'adaptiveFormats' first (usually separates audio/video)
+            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
+            
+            # Sort by bitrate (highest first)
+            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
+            
+            stream_url = None
+            if audio_formats:
+                stream_url = audio_formats[0]['url']
+            else:
+                # Fallback to mixed formats
+                mixed = data.get('formatStreams', [])
+                if mixed: stream_url = mixed[0]['url']
+            
+            if stream_url:
+                return stream_url, f"YouTube: {title}", True
+            else:
+                return None, "Error: No stream found", False
+                
+        except Exception as e:
+            print(f"[API ERROR] {e}")
+            return None, f"API Error: {e}", False
+
+    return url, "External Stream", False
 
 class AudioEngine:
     def __init__(self):
@@ -131,72 +148,49 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-    def play_url(self, url, display_title="YouTube Stream"):
-        print(f"[DEBUG] Playing Invidious URL: {url}")
+    def play_direct_stream(self, url, display_title):
+        """Plays a direct URL (from Invidious API) using ffmpeg only."""
+        print(f"[DEBUG] Playing Direct Stream: {display_title}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        dlp_cmd = [
-            'yt-dlp', 
-            '--no-cache-dir', 
-            '--no-playlist',
-            
-            # --- AUTH & HEADERS ---
-            '--add-header', AUTH_HEADER,
-            '--user-agent', USER_AGENT,
-            '--referer', f"{INVIDIOUS_HOST}/",
-            '--no-check-certificate',
-            
-            '-f', 'bestaudio/best', 
-            '-o', '-'
-        ]
-
-        # FIX: Append 'generic:' to URL to force generic extractor
-        # This replaces the need for the --allowed-extractors flag
-        dlp_cmd.append(f"generic:{url}")
-        
-        try:
-            p_dlp = subprocess.Popen(
-                dlp_cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, # Capture stderr for the monitor thread
-                preexec_fn=os.setsid
-            )
-        except Exception as e:
-            print(f"[ERROR] Could not start yt-dlp: {e}")
-            return
-
-        # START MONITOR THREAD
-        t = threading.Thread(target=monitor_process_output, args=(p_dlp, "YT-DLP"))
-        t.daemon = True
-        t.start()
-
-        ffmpeg_cmd = [
-            'ffmpeg', 
-            '-i', 'pipe:0', 
+        # FFmpeg connects directly. We pass headers for Auth.
+        cmd = [
+            'ffmpeg',
+            '-headers', FFMPEG_HEADERS,
+            '-i', url,
             '-f', 's16le', '-ac', '1', '-ar', '48000', '-'
         ]
+        self._start_process(cmd)
+
+    def play_via_ytdlp(self, url, display_title):
+        """Legacy fallback for non-YouTube URLs"""
+        print(f"[DEBUG] Playing External URL via yt-dlp: {url}")
+        self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
+        
+        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-', url]
+
+        try:
+            p_dlp = subprocess.Popen(dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+        except Exception as e:
+            print(f"[ERROR] yt-dlp fail: {e}")
+            return
+
+        ffmpeg_cmd = ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         
         try:
-            p_ffmpeg = subprocess.Popen(
-                ffmpeg_cmd, 
-                stdin=p_dlp.stdout, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid
-            )
-        except Exception as e:
-            print(f"[ERROR] Could not start ffmpeg: {e}")
+            p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=p_dlp.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+        except:
             try: os.killpg(os.getpgid(p_dlp.pid), signal.SIGKILL)
             except: pass
             return
         
         p_dlp.stdout.close()
-        p_ffmpeg.source_proc = p_dlp
-
+        p_ffmpeg.source_proc = p_dlp # Attach for tracking
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
     def _start_process(self, cmd):
+        # Common starter for ffmpeg-only commands (files or direct streams)
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
@@ -204,7 +198,6 @@ class AudioEngine:
             preexec_fn=os.setsid 
         )
         process.source_proc = None
-        
         with self.lock:
             self.active_processes.append(process)
 
@@ -214,12 +207,11 @@ class AudioEngine:
             for p in self.active_processes[:]: 
                 try:
                     if p.pid: os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except Exception: pass
-                
+                except: pass
                 source = getattr(p, 'source_proc', None)
                 if source and source.pid:
                     try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
-                    except Exception: pass
+                    except: pass
             self.active_processes = []
 
     def set_volume(self, vol):
@@ -238,9 +230,7 @@ class AudioEngine:
         active_now = []
         
         for p in current_procs:
-            if p.poll() is not None:
-                # Process died. The monitor thread handles logging, so we just skip.
-                continue 
+            if p.poll() is not None: continue
             
             try:
                 raw = p.stdout.read(CHUNK_SIZE)
@@ -250,14 +240,12 @@ class AudioEngine:
                         mixed_audio[i] += sample
                     active_now.append(p)
                 else:
-                    # Stream ended
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                        source = getattr(p, 'source_proc', None)
-                        if source: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
+                        if getattr(p, 'source_proc', None):
+                            os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
                     except: pass
-            except Exception as e:
-                pass
+            except: pass
 
         with self.lock:
             self.active_processes = [p for p in self.active_processes if p in active_now]
@@ -285,8 +273,7 @@ def mumble_loop():
 
     try:
         mumble.set_bandwidth(96000)
-    except Exception as e:
-        print(f"[MUMBLE] Warning: Could not set high bandwidth: {e}")
+    except: pass
 
     if CHANNEL:
         print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
@@ -296,26 +283,18 @@ def mumble_loop():
             if channel_obj['name'] == CHANNEL:
                 target = channel_obj
                 break
-        
         if target:
-            print(f"[MUMBLE] Moving to channel ID: {target['channel_id']}")
             mumble.users.myself.move_in(target['channel_id'])
-        else:
-            print(f"[MUMBLE] Channel '{CHANNEL}' not found. Staying in Root.")
 
     next_tick = time.time()
-    
     while True:
         pcm_chunk = audio_engine.get_chunk()
         if pcm_chunk:
             mumble.sound_output.add_sound(pcm_chunk)
-        
         next_tick += PYMUMBLE_AUDIO_PER_PACKET
         sleep_time = next_tick - time.time()
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-        else:
-            next_tick = time.time()
+        if sleep_time > 0: time.sleep(sleep_time)
+        else: next_tick = time.time()
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
@@ -325,23 +304,17 @@ def index():
     stats = get_stats()
     files = []
     valid_exts = tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
-    
     if os.path.exists(SOUNDS_DIR):
         for f in os.listdir(SOUNDS_DIR):
             if f.endswith(valid_exts):
                 files.append({ 'name': f, 'count': stats.get(f, 0) })
-    
-    if sort_type == 'pop':
-        files.sort(key=lambda x: x['count'], reverse=True)
-    else:
-        files.sort(key=lambda x: x['name'])
-
+    if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
+    else: files.sort(key=lambda x: x['name'])
     return render_template('index.html', files=files, volume=int(audio_engine.volume * 100))
 
 @app.route('/play/<path:filename>')
 def play(filename):
-    if ".." in filename or filename.startswith("/"):
-        return "Invalid filename", 400
+    if ".." in filename or filename.startswith("/"): return "Invalid filename", 400
     path = os.path.join(SOUNDS_DIR, filename)
     if os.path.exists(path):
         audio_engine.play_file(path, filename)
@@ -353,10 +326,21 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        clean_url, title = get_clean_video_data(raw_url)
-        audio_engine.play_url(clean_url, display_title=title)
-        update_stat(title)
-        return "Playing URL", 200
+        # 1. Resolve URL (API or Fallback)
+        stream_url, title, is_direct = resolve_video_data(raw_url)
+        
+        if stream_url:
+            if is_direct:
+                # 2a. Play via FFmpeg Direct (Invidious)
+                audio_engine.play_direct_stream(stream_url, title)
+            else:
+                # 2b. Play via yt-dlp (Generic Sites)
+                audio_engine.play_via_ytdlp(stream_url, title)
+                
+            update_stat(title)
+            return "Playing URL", 200
+        else:
+            return "Could not resolve stream", 500
     return "No URL", 400
 
 @app.route('/stop')
