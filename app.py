@@ -2,7 +2,26 @@ import ssl
 import threading
 import logging
 import re
-import base64 # NEW: For Basic Auth encoding
+import base64
+import urllib.request
+import json
+import os
+import time
+import sqlite3
+import subprocess
+import struct
+import signal
+import warnings
+from flask import Flask, render_template, request, jsonify
+
+import pymumble_py3 as pymumble
+from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
+
+# --- LOGGING CONFIG ---
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR) 
+
+warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
 
 # --- MONKEY PATCH FOR PYTHON 3.13 COMPATIBILITY ---
 if not hasattr(ssl, 'wrap_socket'):
@@ -23,42 +42,27 @@ if not hasattr(ssl, 'wrap_socket'):
                                    do_handshake_on_connect=do_handshake_on_connect,
                                    suppress_ragged_eofs=suppress_ragged_eofs)
     ssl.wrap_socket = dummy_wrap_socket
-# --------------------------------------------------
 
-import os
-import time
-import sqlite3
-import subprocess
-import struct
-import signal
-import warnings
-from flask import Flask, render_template, request, jsonify
-
-import pymumble_py3 as pymumble
-from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
-
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR) 
-
-warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
-
-# Configuration
+# --- CONFIGURATION (ENV VARS) ---
 HOST = os.getenv("MUMBLE_HOST", "localhost")
 PORT = int(os.getenv("MUMBLE_PORT", 64738))
 USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
-# --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = "https://tube.wxbu.de"
-INVIDIOUS_USER = "tube"
-INVIDIOUS_PASS = "tube"
+# Invidious Configuration (Optional)
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST") # e.g. "https://tube.wxbu.de"
+INVIDIOUS_USER = os.getenv("INVIDIOUS_USER")
+INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS")
 
-# Generate Basic Auth Header (Authorization: Basic base64String)
-auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
-b64_auth = base64.b64encode(auth_str.encode()).decode()
-AUTH_HEADER = f"Authorization: Basic {b64_auth}"
+# Construct Auth Header only if credentials exist
+AUTH_HEADER = None
+if INVIDIOUS_USER and INVIDIOUS_PASS:
+    auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
+    b64_auth = base64.b64encode(auth_str.encode()).decode()
+    AUTH_HEADER = f"Authorization: Basic {b64_auth}"
 
+# Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -69,6 +73,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
+# --- DATABASE ---
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS stats (filename TEXT PRIMARY KEY, count INTEGER)')
@@ -85,33 +90,60 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- HELPER: Extract ID and Rewrite URL ---
-def get_clean_video_data(url):
+# --- HELPER: Extract YouTube ID ---
+def extract_video_id(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
-    
-    if match:
-        video_id = match.group(1)
-        clean_url = f"{INVIDIOUS_HOST}/watch?v={video_id}"
-        
-        try:
-            # Pass Auth Header to get-title command
-            cmd = [
-                'yt-dlp', 
-                '--get-title', 
-                '--no-warnings', 
-                '--add-header', AUTH_HEADER, # <--- Added Auth
-                clean_url
-            ]
-            title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
-            if not title: title = f"YouTube ID: {video_id}"
-        except:
-            title = f"YouTube ID: {video_id}"
-            
-        return clean_url, f"YouTube: {title}"
-    
-    return url, "External URL"
+    return match.group(1) if match else None
 
+# --- HELPER: Invidious API Resolver ---
+def resolve_invidious_data(video_id):
+    """
+    Uses the Invidious API to get the Direct Stream URL and Title.
+    This prevents yt-dlp from seeing a 'youtube' URL and switching extractors.
+    """
+    if not INVIDIOUS_HOST:
+        return None, None
+
+    api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
+    
+    try:
+        req = urllib.request.Request(api_url)
+        if AUTH_HEADER:
+            req.add_header("Authorization", f"Basic {b64_auth}")
+        
+        with urllib.request.urlopen(req) as response:
+            data = json.load(response)
+            
+            title = data.get('title', f"YouTube ID: {video_id}")
+            
+            # Find the best audio stream
+            # We look in 'adaptiveFormats' for audio-only, or 'formatStreams'
+            best_url = None
+            
+            # Priority: adaptiveFormats (audio/webm -> audio/mp4)
+            formats = data.get('adaptiveFormats', [])
+            for fmt in formats:
+                mime = fmt.get('type', '')
+                if 'audio/webm' in mime:
+                    best_url = fmt.get('url')
+                    break # Prefer WebM audio
+                if 'audio/mp4' in mime and not best_url:
+                    best_url = fmt.get('url')
+            
+            # Fallback to formatStreams if no adaptive audio found
+            if not best_url:
+                streams = data.get('formatStreams', [])
+                if streams:
+                    best_url = streams[0].get('url')
+
+            return best_url, f"YouTube: {title}"
+
+    except Exception as e:
+        print(f"[API ERROR] Failed to resolve via Invidious: {e}")
+        return None, None
+
+# --- AUDIO ENGINE ---
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
@@ -124,26 +156,34 @@ class AudioEngine:
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         self._start_process(cmd)
 
-    def play_url(self, url, display_title="YouTube Stream"):
+    def play_url(self, url, display_title="YouTube Stream", is_raw_stream=False):
         print(f"[DEBUG] Playing URL: {url}")
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
         
+        # Base Command
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', '--no-warnings', '--no-playlist',
-            # Add Basic Auth Header for Invidious
-            '--add-header', AUTH_HEADER, # <--- Added Auth
             '-f', 'bestaudio/best', 
             '-o', '-'
         ]
 
-        if os.path.exists(cookie_file):
+        # 1. AUTHENTICATION (Basic Auth for Invidious)
+        if AUTH_HEADER:
+            dlp_cmd.extend(['--add-header', AUTH_HEADER])
+
+        # 2. STRATEGY SELECTION
+        if is_raw_stream:
+            # If it's a raw stream from the API, we treat it as a generic file.
+            # We DO NOT use cookies or emulation because we are downloading a file, not scraping a page.
+            pass 
+        elif os.path.exists(cookie_file):
             print("[DEBUG] Found cookies.txt! Authenticating...")
             dlp_cmd.extend(['--cookies', cookie_file])
         else:
-            print("[DEBUG] No cookies.txt found. Trying TV Client Emulation...")
+            print("[DEBUG] Standard URL. Using Client Emulation...")
             dlp_cmd.extend(['--extractor-args', 'youtube:player_client=tv'])
 
         dlp_cmd.append(url)
@@ -271,6 +311,7 @@ class AudioEngine:
 
 audio_engine = AudioEngine()
 
+# --- MUMBLE LOOP ---
 def mumble_loop():
     print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
     mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
@@ -315,6 +356,7 @@ def mumble_loop():
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
+# --- ROUTES ---
 @app.route('/')
 def index():
     sort_type = request.args.get('sort', 'alpha')
@@ -349,10 +391,25 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        clean_url, title = get_clean_video_data(raw_url)
-        audio_engine.play_url(clean_url, display_title=title)
-        update_stat(title)
-        return "Playing URL", 200
+        video_id = extract_video_id(raw_url)
+        
+        if video_id:
+            # 1. Try Invidious API
+            stream_url, title = resolve_invidious_data(video_id)
+            
+            if stream_url:
+                # SUCCESS: We have a raw stream URL. 
+                # Pass is_raw_stream=True to skip cookies/emulation checks
+                audio_engine.play_url(stream_url, display_title=title, is_raw_stream=True)
+                update_stat(title)
+                return "Playing Invidious Stream", 200
+            
+            # 2. Fallback to Standard YouTube (Bot Checks apply)
+            print("[INFO] Falling back to standard YouTube resolution")
+            audio_engine.play_url(raw_url, display_title=f"YouTube ID: {video_id}", is_raw_stream=False)
+            update_stat(f"YouTube: {video_id}")
+            return "Playing Standard Stream", 200
+            
     return "No URL", 400
 
 @app.route('/stop')
