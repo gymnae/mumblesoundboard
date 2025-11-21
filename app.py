@@ -47,6 +47,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
+# --- SSL MONKEY PATCH ---
 if not hasattr(ssl, 'wrap_socket'):
     def dummy_wrap_socket(sock, keyfile=None, certfile=None,
                           server_side=False, cert_reqs=ssl.CERT_NONE,
@@ -82,7 +83,7 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- HELPER: Background Log Reader to prevent Deadlocks ---
+# --- HELPER: Background Log Reader ---
 def monitor_process_output(proc, prefix):
     """Reads stderr from a process in a thread to prevent buffer deadlocks"""
     for line in iter(proc.stderr.readline, b''):
@@ -91,6 +92,7 @@ def monitor_process_output(proc, prefix):
             print(f"[{prefix}] {line_str}")
     proc.stderr.close()
 
+# --- URL LOGIC ---
 def get_clean_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
@@ -104,9 +106,9 @@ def get_clean_video_data(url):
                 'yt-dlp', '--get-title', '--no-warnings', 
                 '--add-header', AUTH_HEADER,
                 '--user-agent', USER_AGENT,
-                '--no-check-certificate', # Just in case of SSL issues internally
-                '--allowed-extractors', 'generic', 
-                clean_url
+                '--no-check-certificate',
+                # Use generic: prefix to force generic extractor
+                f"generic:{clean_url}"
             ]
             title = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8').strip()
             if not title: title = f"YouTube ID: {video_id}"
@@ -136,22 +138,22 @@ class AudioEngine:
         dlp_cmd = [
             'yt-dlp', 
             '--no-cache-dir', 
-            # We REMOVE --no-warnings so we can see what's happening in the logs
             '--no-playlist',
+            
+            # --- AUTH & HEADERS ---
             '--add-header', AUTH_HEADER,
             '--user-agent', USER_AGENT,
             '--referer', f"{INVIDIOUS_HOST}/",
-            '--allowed-extractors', 'generic',
             '--no-check-certificate',
+            
             '-f', 'bestaudio/best', 
             '-o', '-'
         ]
 
-        dlp_cmd.append(url)
+        # FIX: Append 'generic:' to URL to force generic extractor
+        # This replaces the need for the --allowed-extractors flag
+        dlp_cmd.append(f"generic:{url}")
         
-        # Debug: print the exact command so you can test it manually if needed
-        # print(f"[CMD] {' '.join(dlp_cmd)}")
-
         try:
             p_dlp = subprocess.Popen(
                 dlp_cmd, 
@@ -164,7 +166,6 @@ class AudioEngine:
             return
 
         # START MONITOR THREAD
-        # This reads the logs in the background, preventing the deadlock
         t = threading.Thread(target=monitor_process_output, args=(p_dlp, "YT-DLP"))
         t.daemon = True
         t.start()
