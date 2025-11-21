@@ -4,7 +4,7 @@ import logging
 import re
 import base64
 import urllib.request
-import urllib.parse # NEW: For joining URLs
+import urllib.parse
 import json
 import os
 import time
@@ -54,11 +54,15 @@ INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST")
 INVIDIOUS_USER = os.getenv("INVIDIOUS_USER")
 INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS")
 
-AUTH_HEADER = None
+# --- AUTH HEADER LOGIC (FIXED) ---
+AUTH_CLI_PARAM = None # For yt-dlp (Key: Value)
+AUTH_VAL = None       # For urllib (Value only)
+
 if INVIDIOUS_USER and INVIDIOUS_PASS:
     auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
     b64_auth = base64.b64encode(auth_str.encode()).decode()
-    AUTH_HEADER = f"Authorization: Basic {b64_auth}"
+    AUTH_VAL = f"Basic {b64_auth}"             # Just the value
+    AUTH_CLI_PARAM = f"Authorization: {AUTH_VAL}" # Key + Value
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -98,13 +102,13 @@ def resolve_invidious_data(video_id):
     if not INVIDIOUS_HOST:
         return None, None
 
-    # CRITICAL: Request "local=true" to tell Invidious to proxy the traffic
     api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}?local=true"
     
     try:
         req = urllib.request.Request(api_url)
-        if AUTH_HEADER:
-            req.add_header("Authorization", AUTH_HEADER)
+        # FIX: Use AUTH_VAL (Value only), not the full CLI string
+        if AUTH_VAL:
+            req.add_header("Authorization", AUTH_VAL)
         
         with urllib.request.urlopen(req) as response:
             data = json.load(response)
@@ -112,23 +116,18 @@ def resolve_invidious_data(video_id):
             
             best_url = None
 
-            # Helper to ensure we ONLY accept URLs that go through Invidious
             def is_safe_proxy_url(u):
                 if not u: return False
-                # Reject direct Google links
                 if "googlevideo.com" in u: return False
-                # Accept if it matches our Invidious Host OR is a relative path
                 if INVIDIOUS_HOST in u or u.startswith("/"): return True
                 return False
 
-            # 1. Check FormatStreams (Progressive) - Best for Proxying
             for fmt in data.get('formatStreams', []):
                 u = fmt.get('url', '')
                 if is_safe_proxy_url(u):
                     best_url = u
                     break 
             
-            # 2. Check Adaptive (DASH) - Only if Progressive missing
             if not best_url:
                 for fmt in data.get('adaptiveFormats', []):
                     if 'audio' in fmt.get('type', '') and is_safe_proxy_url(fmt.get('url', '')):
@@ -136,7 +135,6 @@ def resolve_invidious_data(video_id):
                         break
 
             if best_url:
-                # Handle relative URLs (e.g. /videoplayback?...)
                 if best_url.startswith("/"):
                     best_url = urllib.parse.urljoin(INVIDIOUS_HOST, best_url)
                 return best_url, f"YouTube: {title}"
@@ -173,19 +171,14 @@ class AudioEngine:
             '-o', '-'
         ]
 
-        if AUTH_HEADER:
-            dlp_cmd.extend(['--add-header', AUTH_HEADER])
+        # FIX: Use AUTH_CLI_PARAM (Key: Value) for yt-dlp
+        if AUTH_CLI_PARAM:
+            dlp_cmd.extend(['--add-header', AUTH_CLI_PARAM])
 
-        # STRICT PROXY LOGIC
         if is_raw_stream:
-            # We have a direct link to Invidious.
-            # Treat it as a generic file download. DO NOT use Emulation.
+            # Raw stream from API = Generic file download = No cookies/emulation needed
             pass 
         elif INVIDIOUS_HOST:
-            # If Invidious is Configured but we didn't get a raw stream, 
-            # we should NOT fallback to direct YouTube connection if user wants "Always Proxy"
-            # However, for robustness, if we are here, it means we are trying to play the
-            # raw input URL.
             print("[DEBUG] Using Invidious URL directly...")
             pass
         elif os.path.exists(cookie_file):
@@ -401,20 +394,16 @@ def play_external_url():
         video_id = extract_video_id(raw_url)
         
         if video_id and INVIDIOUS_HOST:
-            # 1. Try Invidious Proxy Resolution
             stream_url, title = resolve_invidious_data(video_id)
             
             if stream_url:
-                # SUCCESS: We have a PROXIED stream URL (points to tube.wxbu.de, not google)
                 audio_engine.play_url(stream_url, display_title=title, is_raw_stream=True)
                 update_stat(title)
                 return "Playing Invidious Proxy Stream", 200
             else:
                 print("[ERROR] Could not resolve a proxy stream from Invidious.")
-                # We do NOT fallback to direct YouTube here because 'Never Contact Youtube' is set.
                 return "Proxy Resolution Failed - Check Server Logs", 500
 
-        # Fallback only if Invidious is NOT configured
         if not INVIDIOUS_HOST:
              if video_id:
                 print("[INFO] No Invidious Host configured. Using Direct YouTube.")
@@ -422,7 +411,7 @@ def play_external_url():
                 update_stat(f"YouTube: {video_id}")
                 return "Playing Standard Stream", 200
             
-    return "No URL or Config Error", 400
+    return "No URL", 400
 
 @app.route('/stop')
 def stop():
