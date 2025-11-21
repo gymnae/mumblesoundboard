@@ -54,15 +54,15 @@ INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST")
 INVIDIOUS_USER = os.getenv("INVIDIOUS_USER")
 INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS")
 
-# --- AUTH HEADER LOGIC (FIXED) ---
-AUTH_CLI_PARAM = None # For yt-dlp (Key: Value)
-AUTH_VAL = None       # For urllib (Value only)
+# --- AUTH HEADER LOGIC ---
+AUTH_CLI_PARAM = None 
+AUTH_VAL = None       
 
 if INVIDIOUS_USER and INVIDIOUS_PASS:
     auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
     b64_auth = base64.b64encode(auth_str.encode()).decode()
-    AUTH_VAL = f"Basic {b64_auth}"             # Just the value
-    AUTH_CLI_PARAM = f"Authorization: {AUTH_VAL}" # Key + Value
+    AUTH_VAL = f"Basic {b64_auth}"             
+    AUTH_CLI_PARAM = f"Authorization: {AUTH_VAL}" 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
@@ -102,11 +102,11 @@ def resolve_invidious_data(video_id):
     if not INVIDIOUS_HOST:
         return None, None
 
+    # Request "local=true" to tell Invidious to proxy the traffic
     api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}?local=true"
     
     try:
         req = urllib.request.Request(api_url)
-        # FIX: Use AUTH_VAL (Value only), not the full CLI string
         if AUTH_VAL:
             req.add_header("Authorization", AUTH_VAL)
         
@@ -118,21 +118,39 @@ def resolve_invidious_data(video_id):
 
             def is_safe_proxy_url(u):
                 if not u: return False
+                # STRICT: Reject direct Google links
                 if "googlevideo.com" in u: return False
+                # Accept if it matches our Invidious Host OR is a relative path
                 if INVIDIOUS_HOST in u or u.startswith("/"): return True
                 return False
 
+            # 1. Check Progressive Streams (formatStreams)
             for fmt in data.get('formatStreams', []):
                 u = fmt.get('url', '')
                 if is_safe_proxy_url(u):
                     best_url = u
                     break 
             
+            # 2. Check Adaptive Streams (adaptiveFormats)
             if not best_url:
                 for fmt in data.get('adaptiveFormats', []):
+                    # Prefer audio streams
                     if 'audio' in fmt.get('type', '') and is_safe_proxy_url(fmt.get('url', '')):
                         best_url = fmt.get('url')
                         break
+
+            # 3. NEW: Check DASH / HLS Manifests
+            # These are often generated locally by Invidious even if streams aren't
+            if not best_url:
+                dash_url = data.get('dashUrl', '')
+                hls_url = data.get('hlsUrl', '')
+                
+                if is_safe_proxy_url(dash_url):
+                    print("[DEBUG] Using Invidious DASH Manifest")
+                    best_url = dash_url
+                elif is_safe_proxy_url(hls_url):
+                    print("[DEBUG] Using Invidious HLS Manifest")
+                    best_url = hls_url
 
             if best_url:
                 if best_url.startswith("/"):
@@ -171,14 +189,17 @@ class AudioEngine:
             '-o', '-'
         ]
 
-        # FIX: Use AUTH_CLI_PARAM (Key: Value) for yt-dlp
         if AUTH_CLI_PARAM:
             dlp_cmd.extend(['--add-header', AUTH_CLI_PARAM])
 
+        # STRICT PROXY LOGIC
         if is_raw_stream:
-            # Raw stream from API = Generic file download = No cookies/emulation needed
+            # We are downloading a direct file/stream from Invidious.
+            # No cookies/emulation needed.
             pass 
         elif INVIDIOUS_HOST:
+            # Should not happen if resolve_invidious_data works, 
+            # but acts as a safety catch.
             print("[DEBUG] Using Invidious URL directly...")
             pass
         elif os.path.exists(cookie_file):
