@@ -78,12 +78,14 @@ def init_db():
         conn.execute('CREATE TABLE IF NOT EXISTS stats (filename TEXT PRIMARY KEY, count INTEGER)')
         conn.commit()
 
+# --- CRITICAL FIX: RUN DB INIT ON STARTUP ---
+# This ensures the table exists before any requests come in
+init_db()
+
 def update_stat(filename):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('INSERT INTO stats (filename, count) VALUES (?, 1) ON CONFLICT(filename) DO UPDATE SET count = count + 1', (filename,))
         conn.commit()
-init_db() 
-def update_stat(filename):
 
 def get_stats():
     with sqlite3.connect(DB_PATH) as conn:
@@ -134,16 +136,13 @@ def resolve_video_data(url):
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
-        # --- NEW DEFAULT VOLUMES ---
-        self.volume_local = 0.75  # 75%
-        self.volume_remote = 0.50 # 50%
+        self.volume_local = 0.75  
+        self.volume_remote = 0.50 
         self.lock = threading.Lock()
         self.current_metadata = None 
-        # Safety limit to prevent container crashes
         self.MAX_CHANNELS = 8 
 
     def _kill_process(self, p):
-        """Helper to safely kill a process and its group"""
         try:
             if p.pid:
                 os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -155,13 +154,8 @@ class AudioEngine:
             except: pass
 
     def _cleanup_dead_and_limit(self):
-        """Internal maintenance: clear dead procs and enforce max channels"""
-        # 1. Remove dead processes
         self.active_processes = [p for p in self.active_processes if p.poll() is None]
-        
-        # 2. Enforce Limit (Remove oldest if too many)
         if len(self.active_processes) >= self.MAX_CHANNELS:
-            # Kill the oldest process (index 0)
             oldest = self.active_processes.pop(0)
             self._kill_process(oldest)
 
@@ -169,8 +163,6 @@ class AudioEngine:
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
         
         with self.lock:
-            # 1. IMMEDIATE INTERRUPT (The Glitch Fix)
-            # Find if this specific file is already playing. If so, kill it INSTANTLY.
             remaining = []
             for p in self.active_processes:
                 if getattr(p, 'tag_filename', None) == filename:
@@ -179,10 +171,8 @@ class AudioEngine:
                     remaining.append(p)
             self.active_processes = remaining
 
-            # 2. Cleanup and Limit
             self._cleanup_dead_and_limit()
 
-            # 3. Start New
             cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
             self._start_process_internal(cmd, source_type='local', tag_filename=filename)
 
@@ -245,7 +235,6 @@ class AudioEngine:
             self.active_processes.append(p_ffmpeg)
 
     def _start_process_internal(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
-        # NOTE: Called inside a lock context
         stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
         
         process = subprocess.Popen(
@@ -297,8 +286,6 @@ class AudioEngine:
             if p.poll() is not None: continue
             
             try:
-                # Non-blocking read attempt not possible with std pipes easily,
-                # but since we limit Max Channels, blocking read is safer now.
                 raw = p.stdout.read(CHUNK_SIZE)
                 if raw and len(raw) == CHUNK_SIZE:
                     samples = struct.unpack(f"<{len(raw)//2}h", raw)
@@ -313,7 +300,6 @@ class AudioEngine:
             except: pass
 
         with self.lock:
-            # Robust list update
             self.active_processes = [p for p in self.active_processes if p in active_now]
 
         if not active_now:
@@ -440,5 +426,7 @@ def view_stats():
     return html
 
 if __name__ == '__main__':
-    init_db()
+    # This block is ignored by Gunicorn, but useful for local 'python app.py' runs
+    # We called init_db() globally above, so we don't strictly need it here,
+    # but it doesn't hurt to leave it.
     app.run(host='0.0.0.0', port=5000, debug=False)
