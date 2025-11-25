@@ -39,7 +39,7 @@ Create a folder for the project and two subfolders for persistence:
 ```bash
 mkdir -p retro-soundboard/sounds
 mkdir -p retro-soundboard/data
-``
+```
 
 Place your audio files inside the sounds/ folder.
 
