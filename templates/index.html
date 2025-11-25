@@ -9,7 +9,7 @@
             color: #00FF00;
             font-family: "Courier New", Courier, monospace;
             margin: 0;
-            padding-bottom: 180px; /* Increased padding for taller footer */
+            padding-bottom: 180px;
             background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg==');
         }
         a { color: #FFFF00; }
@@ -64,6 +64,24 @@
         }
 
         @keyframes blink { 50% { opacity: 0.5; } }
+
+        /* RAINBOW ANIMATION */
+        @keyframes rainbow { 
+            0% { color: #ff0000; }
+            14% { color: #ff7f00; }
+            28% { color: #ffff00; }
+            42% { color: #00ff00; }
+            57% { color: #0000ff; }
+            71% { color: #4b0082; }
+            85% { color: #9400d3; }
+            100% { color: #ff0000; }
+        }
+
+        .rainbow-text {
+            animation: rainbow 5s linear infinite;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px black;
+        }
 
         .toolbar {
             border: 2px solid #00FF00;
@@ -156,7 +174,7 @@
             border: 2px groove white;
             padding: 5px;
             display: flex;
-            flex-direction: column; /* Stack label and slider */
+            flex-direction: column;
             align-items: center;
             gap: 2px;
             min-width: 100px;
@@ -185,13 +203,11 @@
             font-family: monospace;
             width: 200px;
         }
-        
-        marquee { color: yellow; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <marquee scrollamount="10">*** WELCOME TO THE UNDERGROUND SOUND SYSTEM *** CONNECTED TO MUMBLE ***</marquee>
+    <marquee scrollamount="10" class="rainbow-text">*** WELCOME TO THE UNDERGROUND SOUND SYSTEM *** CONNECTED TO MUMBLE ***</marquee>
 
     <div class="container">
         <div class="status-panel">
@@ -257,6 +273,7 @@
         }
 
         function playSound(name) {
+            // No await here - fire and forget allows for spamming
             fetch('/play/' + name);
             updateStatus({playing: true, meta: {type: 'file', text: name}});
         }
@@ -275,7 +292,6 @@
             updateStatus({playing: false, meta: null});
         }
 
-        // --- NEW VOLUME FUNCTIONS ---
         function setLocalVolume(val) {
             fetch('/volume/local/' + val);
         }
