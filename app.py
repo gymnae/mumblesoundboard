@@ -98,8 +98,6 @@ def resolve_video_data(url):
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # print(f"[DEBUG] Querying API: {api_url}")
-        
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
@@ -134,10 +132,13 @@ def resolve_video_data(url):
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
-        self.volume_local = 1.0   
-        self.volume_remote = 0.75 
+        # --- NEW DEFAULT VOLUMES ---
+        self.volume_local = 0.75  # 75%
+        self.volume_remote = 0.50 # 50%
         self.lock = threading.Lock()
         self.current_metadata = None 
+        # Safety limit to prevent container crashes
+        self.MAX_CHANNELS = 8 
 
     def _kill_process(self, p):
         """Helper to safely kill a process and its group"""
@@ -151,42 +152,51 @@ class AudioEngine:
             try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
             except: pass
 
+    def _cleanup_dead_and_limit(self):
+        """Internal maintenance: clear dead procs and enforce max channels"""
+        # 1. Remove dead processes
+        self.active_processes = [p for p in self.active_processes if p.poll() is None]
+        
+        # 2. Enforce Limit (Remove oldest if too many)
+        if len(self.active_processes) >= self.MAX_CHANNELS:
+            # Kill the oldest process (index 0)
+            oldest = self.active_processes.pop(0)
+            self._kill_process(oldest)
+
     def play_file(self, filepath, filename):
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
         
-        # --- STABILITY & GLITCH FIX ---
-        # Before starting, check if this file is ALREADY playing.
-        # If so, kill it. This allows "spamming" without overloading CPU.
         with self.lock:
-            # Filter out the process playing THIS file
-            kept_processes = []
+            # 1. IMMEDIATE INTERRUPT (The Glitch Fix)
+            # Find if this specific file is already playing. If so, kill it INSTANTLY.
+            remaining = []
             for p in self.active_processes:
-                # We tag processes with 'filename' below. Check for match.
                 if getattr(p, 'tag_filename', None) == filename:
                     self._kill_process(p)
                 else:
-                    kept_processes.append(p)
-            self.active_processes = kept_processes
+                    remaining.append(p)
+            self.active_processes = remaining
 
-        # Start the new one
-        cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-        self._start_process(cmd, source_type='local', tag_filename=filename)
+            # 2. Cleanup and Limit
+            self._cleanup_dead_and_limit()
+
+            # 3. Start New
+            cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
+            self._start_process_internal(cmd, source_type='local', tag_filename=filename)
 
     def _stop_existing_remote(self):
-        """Enforces single remote stream policy"""
         with self.lock:
-            kept_processes = []
+            remaining = []
             for p in self.active_processes:
                 if getattr(p, 'source_type', 'local') == 'remote':
                     self._kill_process(p)
                 else:
-                    kept_processes.append(p)
-            self.active_processes = kept_processes
+                    remaining.append(p)
+            self.active_processes = remaining
 
     def play_direct_stream(self, url, display_title):
         print(f"[DEBUG] FFMPEG Connecting to: {url}")
-        self._stop_existing_remote() # Stop previous YouTube video
-        
+        self._stop_existing_remote() 
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cmd = ['ffmpeg']
@@ -194,20 +204,19 @@ class AudioEngine:
              cmd.extend(['-headers', FFMPEG_HEADERS])
              
         cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
-        self._start_process(cmd, capture_stderr=True, source_type='remote')
+        
+        with self.lock:
+            self._start_process_internal(cmd, capture_stderr=True, source_type='remote')
 
     def play_via_ytdlp(self, url, display_title):
         print(f"[DEBUG] Fallback yt-dlp: {url}")
-        self._stop_existing_remote() # Stop previous YouTube video
-        
+        self._stop_existing_remote()
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
         dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-']
-        
         if os.path.exists(cookie_file):
              dlp_cmd.extend(['--cookies', cookie_file])
-             
         dlp_cmd.append(url)
 
         try:
@@ -227,14 +236,14 @@ class AudioEngine:
         
         p_dlp.stdout.close()
         p_ffmpeg.source_proc = p_dlp 
-        
-        # Tag as REMOTE
         p_ffmpeg.source_type = 'remote' 
+        p_ffmpeg.tag_filename = None
         
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
-    def _start_process(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
+    def _start_process_internal(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
+        # NOTE: Called inside a lock context
         stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
         
         process = subprocess.Popen(
@@ -245,7 +254,7 @@ class AudioEngine:
         )
         process.source_proc = None
         process.source_type = source_type 
-        process.tag_filename = tag_filename # Tag for glitching/replacement
+        process.tag_filename = tag_filename 
         
         if capture_stderr:
             def log_errors(proc):
@@ -255,8 +264,7 @@ class AudioEngine:
             t = threading.Thread(target=log_errors, args=(process,), daemon=True)
             t.start()
         
-        with self.lock:
-            self.active_processes.append(process)
+        self.active_processes.append(process)
 
     def stop_all(self):
         self.current_metadata = None
@@ -275,7 +283,6 @@ class AudioEngine:
         CHUNK_SIZE = 960 * 2 
         mixed_audio = [0] * 960
         
-        # Quick lock to grab current list snapshot
         with self.lock:
             if not self.active_processes:
                 self.current_metadata = None
@@ -288,7 +295,8 @@ class AudioEngine:
             if p.poll() is not None: continue
             
             try:
-                # Read takes time, do NOT hold lock here
+                # Non-blocking read attempt not possible with std pipes easily,
+                # but since we limit Max Channels, blocking read is safer now.
                 raw = p.stdout.read(CHUNK_SIZE)
                 if raw and len(raw) == CHUNK_SIZE:
                     samples = struct.unpack(f"<{len(raw)//2}h", raw)
@@ -297,19 +305,14 @@ class AudioEngine:
                     for i, sample in enumerate(samples):
                         val = int(sample * current_vol)
                         mixed_audio[i] += val
-                        
                     active_now.append(p)
                 else:
                     self._kill_process(p)
             except: pass
 
-        # Re-acquire lock to safely update the main list
         with self.lock:
-            # Keep only processes that were active AND haven't been removed by another thread (like play_file)
-            self.active_processes = [
-                p for p in self.active_processes 
-                if p in active_now
-            ]
+            # Robust list update
+            self.active_processes = [p for p in self.active_processes if p in active_now]
 
         if not active_now:
             return None
