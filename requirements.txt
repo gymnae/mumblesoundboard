@@ -1,5 +1,5 @@
 Flask==3.0.0
 pymumble==1.6.1
-# We don't pin yt-dlp version so Docker always grabs the latest
 yt-dlp
 ffmpeg-python==0.2.0
+gunicorn==21.2.0
