@@ -65,22 +65,22 @@
 
         @keyframes blink { 50% { opacity: 0.5; } }
 
-        /* RAINBOW ANIMATION */
-        @keyframes rainbow { 
-            0% { color: #ff0000; }
-            14% { color: #ff7f00; }
-            28% { color: #ffff00; }
-            42% { color: #00ff00; }
-            57% { color: #0000ff; }
-            71% { color: #4b0082; }
-            85% { color: #9400d3; }
-            100% { color: #ff0000; }
+        /* TRUE RAINBOW GRADIENT FLOW */
+        @keyframes rainbow-flow { 
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
         }
 
         .rainbow-text {
-            animation: rainbow 5s linear infinite;
+            background-image: linear-gradient(to left, violet, indigo, blue, green, yellow, orange, red);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+            background-size: 300% 100%;
+            animation: rainbow-flow 4s linear infinite;
             font-weight: bold;
-            text-shadow: 1px 1px 2px black;
+            display: inline-block;
         }
 
         .toolbar {
@@ -207,7 +207,9 @@
 </head>
 <body>
 
-    <marquee scrollamount="10" class="rainbow-text">*** WELCOME TO THE UNDERGROUND SOUND SYSTEM *** CONNECTED TO MUMBLE ***</marquee>
+    <marquee scrollamount="10">
+        <span class="rainbow-text">*** WELCOME TO THE UNDERGROUND SOUND SYSTEM *** CONNECTED TO MUMBLE ***</span>
+    </marquee>
 
     <div class="container">
         <div class="status-panel">
@@ -218,7 +220,7 @@
 
         <h1>Soundboard 2000</h1>
         <center>
-            <img src="https://web.archive.org/web/20091027075204/http://geocities.com/Area51/Hollow/7224/bar_ani.gif" alt="construction">
+            <img src="/static/bar_ani.gif" alt="construction">
         </center>
         <br>
 
