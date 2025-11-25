@@ -82,6 +82,8 @@ def update_stat(filename):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('INSERT INTO stats (filename, count) VALUES (?, 1) ON CONFLICT(filename) DO UPDATE SET count = count + 1', (filename,))
         conn.commit()
+init_db() 
+def update_stat(filename):
 
 def get_stats():
     with sqlite3.connect(DB_PATH) as conn:
