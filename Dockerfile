@@ -1,9 +1,7 @@
-# Use Python 3.11 Slim (Debian Bookworm) - Good balance of size and compatibility
+# Use Python 3.11 Slim (Debian Bookworm)
 FROM python:3.11-slim-bookworm
 
-# 1. Install only runtime dependencies
-# --no-install-recommends: CRITICAL. Prevents installing docs, X11 libs, and extras.
-# We removed 'git' and 'curl' as they are not needed for the app to run.
+# 1. Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
@@ -18,13 +16,11 @@ WORKDIR /app
 RUN mkdir -p /app/data /app/sounds && \
     chown -R appuser:appuser /app
 
-# 4. Environment Variables for Python optimization
-# PYTHONDONTWRITEBYTECODE=1: Prevents Python from writing .pyc files (saves space/clutter)
-# PYTHONUNBUFFERED=1: Ensures logs show up immediately
+# 4. Environment Variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# 5. Install Dependencies
+# 5. Install Dependencies (now includes gunicorn)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir --upgrade yt-dlp
@@ -36,4 +32,6 @@ RUN chown -R appuser:appuser /app
 # 7. Switch User
 USER appuser
 
-CMD ["python", "app.py"]
+# 8. Run Gunicorn (1 Worker, 20 Threads)
+# This handles the spamming issue by allowing concurrent requests
+CMD ["gunicorn", "--worker-class", "gthread", "--threads", "20", "--workers", "1", "--bind", "0.0.0.0:5000", "app:app"]
