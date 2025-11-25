@@ -65,20 +65,20 @@
 
         @keyframes blink { 50% { opacity: 0.5; } }
 
-        /* TRUE RAINBOW GRADIENT FLOW */
+        /* FIXED RAINBOW ANIMATION (One Direction Loop) */
         @keyframes rainbow-flow { 
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
+            0% { background-position: 200% 50%; }
             100% { background-position: 0% 50%; }
         }
 
         .rainbow-text {
-            background-image: linear-gradient(to left, violet, indigo, blue, green, yellow, orange, red);
+            background-image: linear-gradient(to right, violet, indigo, blue, green, yellow, orange, red, violet, indigo, blue);
             background-clip: text;
             -webkit-background-clip: text;
             color: transparent;
-            background-size: 300% 100%;
-            animation: rainbow-flow 4s linear infinite;
+            /* Make the background twice as wide as the text for seamless looping */
+            background-size: 200% 100%;
+            animation: rainbow-flow 3s linear infinite;
             font-weight: bold;
             display: inline-block;
         }
