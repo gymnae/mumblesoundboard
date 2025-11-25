@@ -98,7 +98,7 @@ def resolve_video_data(url):
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        print(f"[DEBUG] Querying API: {api_url}")
+        # print(f"[DEBUG] Querying API: {api_url}")
         
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
@@ -134,20 +134,59 @@ def resolve_video_data(url):
 class AudioEngine:
     def __init__(self):
         self.active_processes = []
-        # --- DUAL VOLUMES ---
-        self.volume_local = 1.0   # 100%
-        self.volume_remote = 0.75 # 75% (Background Music)
+        self.volume_local = 1.0   
+        self.volume_remote = 0.75 
         self.lock = threading.Lock()
         self.current_metadata = None 
 
+    def _kill_process(self, p):
+        """Helper to safely kill a process and its group"""
+        try:
+            if p.pid:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except: pass
+        
+        source = getattr(p, 'source_proc', None)
+        if source and source.pid:
+            try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
+            except: pass
+
     def play_file(self, filepath, filename):
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
+        
+        # --- STABILITY & GLITCH FIX ---
+        # Before starting, check if this file is ALREADY playing.
+        # If so, kill it. This allows "spamming" without overloading CPU.
+        with self.lock:
+            # Filter out the process playing THIS file
+            kept_processes = []
+            for p in self.active_processes:
+                # We tag processes with 'filename' below. Check for match.
+                if getattr(p, 'tag_filename', None) == filename:
+                    self._kill_process(p)
+                else:
+                    kept_processes.append(p)
+            self.active_processes = kept_processes
+
+        # Start the new one
         cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-        # Tag as LOCAL
-        self._start_process(cmd, source_type='local')
+        self._start_process(cmd, source_type='local', tag_filename=filename)
+
+    def _stop_existing_remote(self):
+        """Enforces single remote stream policy"""
+        with self.lock:
+            kept_processes = []
+            for p in self.active_processes:
+                if getattr(p, 'source_type', 'local') == 'remote':
+                    self._kill_process(p)
+                else:
+                    kept_processes.append(p)
+            self.active_processes = kept_processes
 
     def play_direct_stream(self, url, display_title):
         print(f"[DEBUG] FFMPEG Connecting to: {url}")
+        self._stop_existing_remote() # Stop previous YouTube video
+        
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cmd = ['ffmpeg']
@@ -155,11 +194,12 @@ class AudioEngine:
              cmd.extend(['-headers', FFMPEG_HEADERS])
              
         cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
-        # Tag as REMOTE
         self._start_process(cmd, capture_stderr=True, source_type='remote')
 
     def play_via_ytdlp(self, url, display_title):
         print(f"[DEBUG] Fallback yt-dlp: {url}")
+        self._stop_existing_remote() # Stop previous YouTube video
+        
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
@@ -194,7 +234,7 @@ class AudioEngine:
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
-    def _start_process(self, cmd, capture_stderr=False, source_type='local'):
+    def _start_process(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
         stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
         
         process = subprocess.Popen(
@@ -204,7 +244,8 @@ class AudioEngine:
             preexec_fn=os.setsid 
         )
         process.source_proc = None
-        process.source_type = source_type # Store type on the process object
+        process.source_type = source_type 
+        process.tag_filename = tag_filename # Tag for glitching/replacement
         
         if capture_stderr:
             def log_errors(proc):
@@ -221,16 +262,9 @@ class AudioEngine:
         self.current_metadata = None
         with self.lock:
             for p in self.active_processes[:]: 
-                try:
-                    if p.pid: os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except: pass
-                source = getattr(p, 'source_proc', None)
-                if source and source.pid:
-                    try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
-                    except: pass
+                self._kill_process(p)
             self.active_processes = []
 
-    # --- NEW VOLUME SETTERS ---
     def set_volume_local(self, vol):
         self.volume_local = max(0.0, min(1.0, float(vol) / 100.0))
 
@@ -241,6 +275,7 @@ class AudioEngine:
         CHUNK_SIZE = 960 * 2 
         mixed_audio = [0] * 960
         
+        # Quick lock to grab current list snapshot
         with self.lock:
             if not self.active_processes:
                 self.current_metadata = None
@@ -253,36 +288,34 @@ class AudioEngine:
             if p.poll() is not None: continue
             
             try:
+                # Read takes time, do NOT hold lock here
                 raw = p.stdout.read(CHUNK_SIZE)
                 if raw and len(raw) == CHUNK_SIZE:
                     samples = struct.unpack(f"<{len(raw)//2}h", raw)
-                    
-                    # --- APPLY SOURCE-SPECIFIC VOLUME ---
                     current_vol = self.volume_local if getattr(p, 'source_type', 'local') == 'local' else self.volume_remote
                     
                     for i, sample in enumerate(samples):
-                        # Apply the specific volume for this stream
                         val = int(sample * current_vol)
                         mixed_audio[i] += val
                         
                     active_now.append(p)
                 else:
-                    try:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                        if getattr(p, 'source_proc', None):
-                            os.killpg(os.getpgid(p.source_proc.pid), signal.SIGKILL)
-                    except: pass
+                    self._kill_process(p)
             except: pass
 
+        # Re-acquire lock to safely update the main list
         with self.lock:
-            self.active_processes = [p for p in self.active_processes if p in active_now]
+            # Keep only processes that were active AND haven't been removed by another thread (like play_file)
+            self.active_processes = [
+                p for p in self.active_processes 
+                if p in active_now
+            ]
 
         if not active_now:
             return None
 
         final_bytes = bytearray()
         for sample in mixed_audio:
-            # Hard clip the final mix
             val = max(-32768, min(32767, sample))
             final_bytes += struct.pack("<h", val)
             
@@ -374,7 +407,6 @@ def stop():
     audio_engine.stop_all()
     return "Stopped", 200
 
-# --- NEW ROUTES FOR DUAL VOLUME ---
 @app.route('/volume/local/<int:vol>')
 def set_volume_local(vol):
     audio_engine.set_volume_local(vol)
