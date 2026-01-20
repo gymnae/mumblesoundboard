@@ -1,432 +1,354 @@
-import ssl
-import threading
-import logging
-import re
-import base64
-import signal
-import struct
-import subprocess
 import os
+import shutil
+import subprocess
+import threading
 import time
-import sqlite3
-import warnings
-import json
-import urllib.request
-import urllib.error
-from flask import Flask, render_template, request, jsonify
+from contextlib import asynccontextmanager
 
-import pymumble_py3 as pymumble
-from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
+import yt_dlp
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
+from pymumble_py3 import Mumble
+from pymumble_py3.callbacks import PYMUMBLE_CLBK_CONNECTED, PYMUMBLE_CLBK_DISCONNECTED
+from starlette.responses import JSONResponse
 
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR) 
+# --- Constants ---
+SOUNDS_DIR = "sounds"
+FFMPEG_PATH = "ffmpeg"  # Assumes ffmpeg is in the system's PATH
+YTDL_PATH = "yt-dlp"    # Assumes yt-dlp is in the system's PATH
+BITRATE = 48000  # Mumble's audio bitrate
 
-warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
+# --- Global State ---
+state = {
+    "mumble": None,
+    "ffmpeg_process": None,
+    "connected": False,
+    "mumble_address": "",
+    "current_music_title": "",
+    "current_music_audio_url": "",
+    "should_reconnect": False, # Control flag for the reconnection loop
+    "state_lock": threading.Lock(),
+}
 
-# Configuration
-HOST = os.getenv("MUMBLE_HOST", "localhost")
-PORT = int(os.getenv("MUMBLE_PORT", 64738))
-USER = os.getenv("MUMBLE_USER", "SoundBot")
-PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
-CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
+# --- yt-dlp Setup ---
+ydl_opts = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "outtmpl": "%(id)s.%(ext)s",
+    "noplaylist": True,
+    "ffmpeg_location": FFMPEG_PATH,
+    "yt_dlp_path": YTDL_PATH,
+}
 
-# --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = "https://tube.wxbu.de" 
-INVIDIOUS_USER = "tube"
-INVIDIOUS_PASS = "tube"
+# --- Helper Functions ---
 
-FFMPEG_HEADERS = ""
-AUTH_HEADER_VAL = ""
-if INVIDIOUS_USER and INVIDIOUS_PASS:
-    auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
-    b64_auth = base64.b64encode(auth_str.encode()).decode()
-    AUTH_HEADER_VAL = f"Basic {b64_auth}"
-    FFMPEG_HEADERS = f"Authorization: {AUTH_HEADER_VAL}\r\n"
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, "stats.db")
-
-os.makedirs(SOUNDS_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-
-app = Flask(__name__)
-
-# --- SSL PATCH ---
-if not hasattr(ssl, 'wrap_socket'):
-    def dummy_wrap_socket(sock, keyfile=None, certfile=None,
-                          server_side=False, cert_reqs=ssl.CERT_NONE,
-                          ssl_version=ssl.PROTOCOL_TLS, ca_certs=None,
-                          do_handshake_on_connect=True,
-                          suppress_ragged_eofs=True,
-                          ciphers=None):
-        context = ssl.SSLContext(ssl_version)
-        if certfile or keyfile:
-            context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-        if ca_certs:
-            context.load_verify_locations(ca_certs)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        return context.wrap_socket(sock, server_side=server_side,
-                                   do_handshake_on_connect=do_handshake_on_connect,
-                                   suppress_ragged_eofs=suppress_ragged_eofs)
-    ssl.wrap_socket = dummy_wrap_socket
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS stats (filename TEXT PRIMARY KEY, count INTEGER)')
-        conn.commit()
-
-# --- CRITICAL FIX: RUN DB INIT ON STARTUP ---
-# This ensures the table exists before any requests come in
-init_db()
-
-def update_stat(filename):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('INSERT INTO stats (filename, count) VALUES (?, 1) ON CONFLICT(filename) DO UPDATE SET count = count + 1', (filename,))
-        conn.commit()
-
-def get_stats():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM stats")
-        return {row['filename']: row['count'] for row in cursor.fetchall()}
-
-# --- ROBUST URL RESOLVER ---
-def resolve_video_data(url):
-    youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
-    match = re.search(youtube_regex, url)
-    
-    if match and INVIDIOUS_HOST:
-        video_id = match.group(1)
-        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
-        
-        req = urllib.request.Request(api_url)
-        if AUTH_HEADER_VAL:
-            req.add_header("Authorization", AUTH_HEADER_VAL)
-        
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
-            
-            title = data.get('title', f"YouTube ID: {video_id}")
-            
-            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
-            
-            itag = None
-            if audio_formats:
-                itag = audio_formats[0].get('itag')
-            else:
-                mixed = data.get('formatStreams', [])
-                if mixed: itag = mixed[0].get('itag')
-            
-            if itag:
-                proxy_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
-                return proxy_url, f"YouTube: {title}", True
-            else:
-                print("[API WARNING] No itag found. Falling back.")
-                
-        except Exception as e:
-            print(f"[API FAIL] {e}")
-
-    return url, "External Stream", False
-
-class AudioEngine:
-    def __init__(self):
-        self.active_processes = []
-        self.volume_local = 0.75  
-        self.volume_remote = 0.50 
-        self.lock = threading.Lock()
-        self.current_metadata = None 
-        self.MAX_CHANNELS = 8 
-
-    def _kill_process(self, p):
-        try:
-            if p.pid:
-                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except: pass
-        
-        source = getattr(p, 'source_proc', None)
-        if source and source.pid:
-            try: os.killpg(os.getpgid(source.pid), signal.SIGKILL)
-            except: pass
-
-    def _cleanup_dead_and_limit(self):
-        self.active_processes = [p for p in self.active_processes if p.poll() is None]
-        if len(self.active_processes) >= self.MAX_CHANNELS:
-            oldest = self.active_processes.pop(0)
-            self._kill_process(oldest)
-
-    def play_file(self, filepath, filename):
-        self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
-        
-        with self.lock:
-            remaining = []
-            for p in self.active_processes:
-                if getattr(p, 'tag_filename', None) == filename:
-                    self._kill_process(p)
-                else:
-                    remaining.append(p)
-            self.active_processes = remaining
-
-            self._cleanup_dead_and_limit()
-
-            cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-            self._start_process_internal(cmd, source_type='local', tag_filename=filename)
-
-    def _stop_existing_remote(self):
-        with self.lock:
-            remaining = []
-            for p in self.active_processes:
-                if getattr(p, 'source_type', 'local') == 'remote':
-                    self._kill_process(p)
-                else:
-                    remaining.append(p)
-            self.active_processes = remaining
-
-    def play_direct_stream(self, url, display_title):
-        print(f"[DEBUG] FFMPEG Connecting to: {url}")
-        self._stop_existing_remote() 
-        self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
-        
-        cmd = ['ffmpeg']
-        if FFMPEG_HEADERS:
-             cmd.extend(['-headers', FFMPEG_HEADERS])
-             
-        cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
-        
-        with self.lock:
-            self._start_process_internal(cmd, capture_stderr=True, source_type='remote')
-
-    def play_via_ytdlp(self, url, display_title):
-        print(f"[DEBUG] Fallback yt-dlp: {url}")
-        self._stop_existing_remote()
-        self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
-        
-        cookie_file = os.path.join(DATA_DIR, 'cookies.txt')
-        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist', '-f', 'bestaudio/best', '-o', '-']
-        if os.path.exists(cookie_file):
-             dlp_cmd.extend(['--cookies', cookie_file])
-        dlp_cmd.append(url)
-
-        try:
-            p_dlp = subprocess.Popen(dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
-        except Exception as e:
-            print(f"[ERROR] yt-dlp fail: {e}")
-            return
-
-        ffmpeg_cmd = ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
-        
-        try:
-            p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=p_dlp.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
-        except:
-            try: os.killpg(os.getpgid(p_dlp.pid), signal.SIGKILL)
-            except: pass
-            return
-        
-        p_dlp.stdout.close()
-        p_ffmpeg.source_proc = p_dlp 
-        p_ffmpeg.source_type = 'remote' 
-        p_ffmpeg.tag_filename = None
-        
-        with self.lock:
-            self.active_processes.append(p_ffmpeg)
-
-    def _start_process_internal(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
-        stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
-        
-        process = subprocess.Popen(
-            cmd, 
-            stdout=subprocess.PIPE, 
-            stderr=stderr_dest,
-            preexec_fn=os.setsid 
-        )
-        process.source_proc = None
-        process.source_type = source_type 
-        process.tag_filename = tag_filename 
-        
-        if capture_stderr:
-            def log_errors(proc):
-                for line in iter(proc.stderr.readline, b''):
-                    print(f"[FFMPEG ERROR] {line.decode('utf-8', errors='ignore').strip()}")
-                proc.stderr.close()
-            t = threading.Thread(target=log_errors, args=(process,), daemon=True)
-            t.start()
-        
-        self.active_processes.append(process)
-
-    def stop_all(self):
-        self.current_metadata = None
-        with self.lock:
-            for p in self.active_processes[:]: 
-                self._kill_process(p)
-            self.active_processes = []
-
-    def set_volume_local(self, vol):
-        self.volume_local = max(0.0, min(1.0, float(vol) / 100.0))
-
-    def set_volume_remote(self, vol):
-        self.volume_remote = max(0.0, min(1.0, float(vol) / 100.0))
-
-    def get_chunk(self):
-        CHUNK_SIZE = 960 * 2 
-        mixed_audio = [0] * 960
-        
-        with self.lock:
-            if not self.active_processes:
-                self.current_metadata = None
-                return None
-            current_procs = list(self.active_processes)
-
-        active_now = []
-        
-        for p in current_procs:
-            if p.poll() is not None: continue
-            
+def stop_audio_stream():
+    """Safely stops any active ffmpeg process."""
+    with state["state_lock"]:
+        if state["ffmpeg_process"]:
             try:
-                raw = p.stdout.read(CHUNK_SIZE)
-                if raw and len(raw) == CHUNK_SIZE:
-                    samples = struct.unpack(f"<{len(raw)//2}h", raw)
-                    current_vol = self.volume_local if getattr(p, 'source_type', 'local') == 'local' else self.volume_remote
-                    
-                    for i, sample in enumerate(samples):
-                        val = int(sample * current_vol)
-                        mixed_audio[i] += val
-                    active_now.append(p)
-                else:
-                    self._kill_process(p)
-            except: pass
+                state["ffmpeg_process"].stdin.close()
+                state["ffmpeg_process"].terminate()
+                state["ffmpeg_process"].wait(timeout=2)
+            except Exception as e:
+                print(f"Error stopping ffmpeg: {e}")
+            state["ffmpeg_process"] = None
 
-        with self.lock:
-            self.active_processes = [p for p in self.active_processes if p in active_now]
+def play_audio_source(ffmpeg_args: list):
+    """Starts a new ffmpeg process with the given args."""
+    stop_audio_stream() # Ensure previous stream is dead first
 
-        if not active_now:
-            return None
+    with state["state_lock"]:
+        if not state["connected"] or not state["mumble"]:
+            print("Cannot play audio: Mumble not connected.")
+            return
 
-        final_bytes = bytearray()
-        for sample in mixed_audio:
-            val = max(-32768, min(32767, sample))
-            final_bytes += struct.pack("<h", val)
-            
-        return bytes(final_bytes)
+        try:
+            state["ffmpeg_process"] = subprocess.Popen(
+                [FFMPEG_PATH] + ffmpeg_args,
+                stdin=subprocess.PIPE,
+                stdout=state["mumble"].sound_output.get_input_stream(),
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            print(f"Error starting ffmpeg: {e}")
 
-audio_engine = AudioEngine()
+def play_youtube_stream(audio_url: str, title: str):
+    """Helper to start a music-only stream."""
+    with state["state_lock"]:
+        state["current_music_title"] = title
+        state["current_music_audio_url"] = audio_url
+    
+    args = [
+        "-re", "-i", audio_url,
+        "-f", "s16le", "-ar", str(BITRATE), "-ac", "1", "-",
+    ]
+    play_audio_source(args)
+    
+    threading.Thread(target=monitor_stream_end, args=(audio_url,), daemon=True).start()
 
-def mumble_loop():
-    print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
-    mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-    mumble.server_max_bandwidth = None 
-    mumble.start()
-    mumble.is_ready()
-    print("[MUMBLE] Connected.")
+def monitor_stream_end(audio_url_being_played: str):
+    """Waits for the ffmpeg process to end and clears the music state."""
+    process_to_watch = None
+    with state["state_lock"]:
+        process_to_watch = state["ffmpeg_process"]
+
+    if process_to_watch:
+        try:
+            process_to_watch.wait()
+        except:
+            pass
+
+    with state["state_lock"]:
+        if state["current_music_audio_url"] == audio_url_being_played:
+            print(f"Stream finished: {state['current_music_title']}")
+            state["current_music_title"] = ""
+            state["current_music_audio_url"] = ""
+            state["ffmpeg_process"] = None
+
+# --- Mumble Thread Target (With Reconnection Logic) ---
+
+def mumble_thread_target(address, username, password):
+    """Manages Mumble connection with auto-reconnect logic."""
+    print(f"Starting connection loop for {address}...")
+    
+    with state["state_lock"]:
+        state["should_reconnect"] = True
+
+    while True:
+        # Check if we should stop trying (e.g. user clicked Disconnect)
+        with state["state_lock"]:
+            if not state["should_reconnect"]:
+                print("Reconnection loop stopping by user request.")
+                break
+
+        print(f"Connecting to {address} as {username}...")
+        mumble = Mumble(address, username, password=password, port=64738, debug=False)
+
+        def on_connected():
+            print("Mumble: Connected!")
+            with state["state_lock"]:
+                state["connected"] = True
+                state["mumble_address"] = address
+
+        def on_disconnected():
+            print("Mumble: Disconnected.")
+            stop_audio_stream()
+            with state["state_lock"]:
+                state["connected"] = False
+                state["mumble"] = None
+                # We do NOT clear mumble_address here so status endpoint knows where we are trying to go
+                state["current_music_title"] = ""
+                state["current_music_audio_url"] = ""
+
+        mumble.callbacks.set_callback(PYMUMBLE_CLBK_CONNECTED, on_connected)
+        mumble.callbacks.set_callback(PYMUMBLE_CLBK_DISCONNECTED, on_disconnected)
+        
+        with state["state_lock"]:
+            state["mumble"] = mumble
+
+        try:
+            mumble.start()
+            mumble.join() # This blocks until connection is lost or stop() is called
+        except Exception as e:
+            print(f"Mumble connection error: {e}")
+        
+        # If we get here, mumble.join() has returned, meaning we disconnected.
+        on_disconnected()
+
+        # Check if we should retry
+        with state["state_lock"]:
+            if not state["should_reconnect"]:
+                break
+        
+        print("Connection lost. Retrying in 5 seconds...")
+        time.sleep(5)
+
+# --- FastAPI App ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    os.makedirs(SOUNDS_DIR, exist_ok=True)
+    yield
+    print("Shutting down...")
+    with state["state_lock"]:
+        state["should_reconnect"] = False # Stop the loop
+        if state["mumble"]:
+            state["mumble"].stop()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post("/api/connect")
+async def connect_to_mumble(
+    address: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(""),
+):
+    with state["state_lock"]:
+        if state["connected"] or state["should_reconnect"]:
+             # If we are already connected OR in the middle of a retry loop
+            if state["connected"]:
+                 raise HTTPException(status_code=400, detail="Already connected.")
+            else:
+                 # If we are strictly not connected, but should_reconnect is true, 
+                 # we might be in the 5-second sleep. We'll allow a "reset" here
+                 # by letting the new thread start and setting the flag.
+                 pass
+
+    # Start the Mumble client in a background thread
+    threading.Thread(
+        target=mumble_thread_target,
+        args=(address, username, password),
+        daemon=True,
+    ).start()
+    
+    return JSONResponse({"success": True, "message": "Connection initiated."})
+
+@app.post("/api/disconnect")
+async def disconnect_from_mumble():
+    with state["state_lock"]:
+        # Set flag to False so the loop in the thread stops
+        state["should_reconnect"] = False
+        
+        if state["mumble"]:
+            state["mumble"].stop() # This breaks the mumble.join() in the thread
+        
+        state["connected"] = False # Immediate UI update
+        state["mumble_address"] = ""
+
+    return JSONResponse({"success": True, "message": "Disconnected."})
+
+@app.get("/api/status")
+async def get_status():
+    with state["state_lock"]:
+        try:
+            files = os.listdir(SOUNDS_DIR)
+            snippets = [f for f in files if os.path.isfile(os.path.join(SOUNDS_DIR, f))]
+        except Exception:
+            snippets = []
+        
+        # If we are not connected but 'should_reconnect' is true, we are 'Reconnecting...'
+        status_msg = ""
+        if state["connected"]:
+            status_msg = "Connected"
+        elif state["should_reconnect"]:
+            status_msg = "Reconnecting..."
+        else:
+            status_msg = "Not Connected"
+
+        return {
+            "connected": state["connected"],
+            "statusMessage": status_msg, # New field for UI
+            "mumbleAddress": state["mumble_address"],
+            "currentMusic": state["current_music_title"],
+            "snippets": snippets,
+        }
+
+@app.post("/api/play-youtube")
+async def play_youtube(url: str = Form(...)):
+    if not state["connected"]:
+        raise HTTPException(status_code=400, detail="Not connected to Mumble.")
 
     try:
-        mumble.set_bandwidth(96000)
-    except: pass
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = None
+            for f in info.get("formats", []):
+                if f.get("acodec") != "none" and f.get("vcodec") == "none":
+                    audio_url = f.get("url")
+                    break
+            if not audio_url:
+                 audio_url = info.get("url")
 
-    if CHANNEL:
-        print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
-        time.sleep(2) 
-        target = None
-        for channel_id, channel_obj in mumble.channels.items():
-            if channel_obj['name'] == CHANNEL:
-                target = channel_obj
-                break
-        if target:
-            mumble.users.myself.move_in(target['channel_id'])
+            if not audio_url:
+                raise HTTPException(status_code=404, detail="Could not find a suitable audio stream.")
+                
+            title = info.get("title", "Unknown Title")
+            
+            threading.Thread(target=play_youtube_stream, args=(audio_url, title), daemon=True).start()
+            
+            return JSONResponse({"success": True, "message": f"Playing: {title}"})
 
-    next_tick = time.time()
-    while True:
-        pcm_chunk = audio_engine.get_chunk()
-        if pcm_chunk:
-            mumble.sound_output.add_sound(pcm_chunk)
-        next_tick += PYMUMBLE_AUDIO_PER_PACKET
-        sleep_time = next_tick - time.time()
-        if sleep_time > 0: time.sleep(sleep_time)
-        else: next_tick = time.time()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing YouTube URL: {e}")
 
-threading.Thread(target=mumble_loop, daemon=True).start()
+@app.post("/api/play-snippet")
+async def play_snippet(filename: str = Form(...)):
+    if not state["connected"]:
+        raise HTTPException(status_code=400, detail="Not connected to Mumble.")
 
-@app.route('/')
-def index():
-    sort_type = request.args.get('sort', 'alpha')
-    stats = get_stats()
-    files = []
-    valid_exts = tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
-    if os.path.exists(SOUNDS_DIR):
-        for f in os.listdir(SOUNDS_DIR):
-            if f.endswith(valid_exts):
-                files.append({ 'name': f, 'count': stats.get(f, 0) })
-    if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
-    else: files.sort(key=lambda x: x['name'])
+    snippet_path = os.path.join(SOUNDS_DIR, os.path.basename(filename))
+    if not os.path.exists(snippet_path):
+        raise HTTPException(status_code=404, detail="Snippet not found.")
+
+    with state["state_lock"]:
+        music_url = state["current_music_audio_url"]
+        music_title = state["current_music_title"]
     
-    return render_template('index.html', 
-                         files=files, 
-                         vol_local=int(audio_engine.volume_local * 100),
-                         vol_remote=int(audio_engine.volume_remote * 100))
+    stop_audio_stream()
 
-@app.route('/play/<path:filename>')
-def play(filename):
-    if ".." in filename or filename.startswith("/"): return "Invalid filename", 400
-    path = os.path.join(SOUNDS_DIR, filename)
-    if os.path.exists(path):
-        audio_engine.play_file(path, filename)
-        update_stat(filename)
-        return "Playing", 200
-    return "File not found", 404
+    if music_url:
+        print(f"Mixing {filename} over {music_title}")
+        args = [
+            "-re", "-i", music_url,
+            "-i", snippet_path,
+            "-filter_complex", "[0:a]volume=0.5[a];[1:a]volume=1.0[b];[a][b]amix=inputs=2:duration=shortest[out]",
+            "-map", "[out]",
+            "-f", "s16le", "-ar", str(BITRATE), "-ac", "1", "-",
+        ]
+    else:
+        print(f"Playing snippet {filename}")
+        args = [
+            "-i", snippet_path,
+            "-f", "s16le", "-ar", str(BITRATE), "-ac", "1", "-",
+        ]
+        
+    play_audio_source(args)
 
-@app.route('/play_url')
-def play_external_url():
-    raw_url = request.args.get('url')
-    if raw_url:
-        stream_url, title, is_direct = resolve_video_data(raw_url)
-        if stream_url:
-            if is_direct:
-                audio_engine.play_direct_stream(stream_url, title)
-            else:
-                audio_engine.play_via_ytdlp(stream_url, title)
-            update_stat(title)
-            return "Playing URL", 200
-        else:
-            return "Could not resolve stream", 500
-    return "No URL", 400
+    if music_url:
+        threading.Thread(
+            target=monitor_and_restart_music,
+            args=(music_url, music_title),
+            daemon=True
+        ).start()
 
-@app.route('/stop')
-def stop():
-    audio_engine.stop_all()
-    return "Stopped", 200
+    return JSONResponse({"success": True, "message": f"Playing snippet: {filename}"})
 
-@app.route('/volume/local/<int:vol>')
-def set_volume_local(vol):
-    audio_engine.set_volume_local(vol)
-    return "Local Volume Set", 200
+def monitor_and_restart_music(music_url: str, music_title: str):
+    """Waits for the *mixed* stream to end, then restarts the music."""
+    process_to_watch = None
+    with state["state_lock"]:
+        process_to_watch = state["ffmpeg_process"]
 
-@app.route('/volume/remote/<int:vol>')
-def set_volume_remote(vol):
-    audio_engine.set_volume_remote(vol)
-    return "Remote Volume Set", 200
+    if process_to_watch:
+        try:
+            process_to_watch.wait()
+        except:
+            pass
+    
+    time.sleep(0.1)
 
-@app.route('/status')
-def get_status():
-    is_playing = len(audio_engine.active_processes) > 0
-    return jsonify({
-        'playing': is_playing,
-        'meta': audio_engine.current_metadata if is_playing else None
-    })
+    with state["state_lock"]:
+        if not state["ffmpeg_process"] and state["current_music_audio_url"] == music_url:
+            print(f"Snippet finished, restarting music: {music_title}")
+            threading.Thread(target=play_youtube_stream, args=(music_url, music_title), daemon=True).start()
 
-@app.route('/stats')
-def view_stats():
-    stats = get_stats()
-    html = "<h1>Statistics</h1><table border='1'><tr><th>File / Video</th><th>Plays</th></tr>"
-    for k, v in sorted(stats.items(), key=lambda item: item[1], reverse=True):
-        html += f"<tr><td>{k}</td><td>{v}</td></tr>"
-    html += "</table><br><a href='/'>Back</a>"
-    return html
+@app.post("/api/upload-snippet")
+async def upload_snippet(snippet: UploadFile = File(...)):
+    if not snippet.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
+        
+    filename = os.path.basename(snippet.filename).replace(" ", "_")
+    dst_path = os.path.join(SOUNDS_DIR, filename)
 
-if __name__ == '__main__':
-    # This block is ignored by Gunicorn, but useful for local 'python app.py' runs
-    # We called init_db() globally above, so we don't strictly need it here,
-    # but it doesn't hurt to leave it.
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    try:
+        with open(dst_path, "wb") as buffer:
+            shutil.copyfileobj(snippet.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving file: {e}")
+    finally:
+        snippet.file.close()
+
+    return JSONResponse({"success": True, "message": f"File uploaded: {filename}"})
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
