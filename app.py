@@ -31,12 +31,15 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = "https://tube.wxbu.de" 
-INVIDIOUS_USER = "tube"
-INVIDIOUS_PASS = "tube"
+# Now uses Environment Variables. Defaults to empty (No Auth) if not provided.
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
+INVIDIOUS_USER = os.getenv("INVIDIOUS_USER", "")
+INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS", "")
 
 FFMPEG_HEADERS = ""
 AUTH_HEADER_VAL = ""
+
+# Only generate Auth headers if BOTH User and Pass are provided
 if INVIDIOUS_USER and INVIDIOUS_PASS:
     auth_str = f"{INVIDIOUS_USER}:{INVIDIOUS_PASS}"
     b64_auth = base64.b64encode(auth_str.encode()).decode()
@@ -79,7 +82,6 @@ def init_db():
         conn.commit()
 
 # --- CRITICAL FIX: RUN DB INIT ON STARTUP ---
-# This ensures the table exists before any requests come in
 init_db()
 
 def update_stat(filename):
@@ -314,57 +316,38 @@ class AudioEngine:
 
 audio_engine = AudioEngine()
 
-# --- RECONNECTION LOGIC ADDED HERE ---
 def mumble_loop():
+    print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
+    mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
+    mumble.server_max_bandwidth = None 
+    mumble.start()
+    mumble.is_ready()
+    print("[MUMBLE] Connected.")
+
+    try:
+        mumble.set_bandwidth(96000)
+    except: pass
+
+    if CHANNEL:
+        print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
+        time.sleep(2) 
+        target = None
+        for channel_id, channel_obj in mumble.channels.items():
+            if channel_obj['name'] == CHANNEL:
+                target = channel_obj
+                break
+        if target:
+            mumble.users.myself.move_in(target['channel_id'])
+
+    next_tick = time.time()
     while True:
-        mumble = None
-        try:
-            print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
-            mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-            mumble.server_max_bandwidth = None 
-            mumble.start()
-            mumble.is_ready()
-            print("[MUMBLE] Connected.")
-
-            try:
-                mumble.set_bandwidth(96000)
-            except: pass
-
-            if CHANNEL:
-                print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
-                time.sleep(2) 
-                target = None
-                for channel_id, channel_obj in mumble.channels.items():
-                    if channel_obj['name'] == CHANNEL:
-                        target = channel_obj
-                        break
-                if target:
-                    mumble.users.myself.move_in(target['channel_id'])
-
-            next_tick = time.time()
-            
-            # Inner loop: Push audio while connection is alive
-            while mumble.is_alive():
-                pcm_chunk = audio_engine.get_chunk()
-                if pcm_chunk:
-                    mumble.sound_output.add_sound(pcm_chunk)
-                next_tick += PYMUMBLE_AUDIO_PER_PACKET
-                sleep_time = next_tick - time.time()
-                if sleep_time > 0: time.sleep(sleep_time)
-                else: next_tick = time.time()
-            
-            print("[MUMBLE] Disconnected from server.")
-
-        except Exception as e:
-            print(f"[MUMBLE] Connection Error: {e}")
-        
-        # Cleanup before retrying
-        if mumble:
-            try: mumble.stop()
-            except: pass
-            
-        print("[MUMBLE] Reconnecting in 5 seconds...")
-        time.sleep(5)
+        pcm_chunk = audio_engine.get_chunk()
+        if pcm_chunk:
+            mumble.sound_output.add_sound(pcm_chunk)
+        next_tick += PYMUMBLE_AUDIO_PER_PACKET
+        sleep_time = next_tick - time.time()
+        if sleep_time > 0: time.sleep(sleep_time)
+        else: next_tick = time.time()
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
@@ -445,7 +428,4 @@ def view_stats():
     return html
 
 if __name__ == '__main__':
-    # This block is ignored by Gunicorn, but useful for local 'python app.py' runs
-    # We called init_db() globally above, so we don't strictly need it here,
-    # but it doesn't hurt to leave it.
     app.run(host='0.0.0.0', port=5000, debug=False)
