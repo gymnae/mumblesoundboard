@@ -33,7 +33,6 @@ CHANNEL = os.getenv("MUMBLE_CHANNEL", "")
 
 # --- INVIDIOUS CONFIGURATION ---
 INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
-# Strip trailing slash if present for clean URL building
 if INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
 
@@ -97,83 +96,64 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- UPDATED URL RESOLVER ---
+# --- UNIFIED URL RESOLVER (API FOR ALL) ---
 def resolve_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match and INVIDIOUS_HOST:
         video_id = match.group(1)
+        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # --- SCENARIO 1: AUTHENTICATED INSTANCE ---
-        if INVIDIOUS_USER and INVIDIOUS_PASS:
-            api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
-            req = urllib.request.Request(api_url)
-            if AUTH_HEADER_VAL:
-                req.add_header("Authorization", AUTH_HEADER_VAL)
+        # Build request (Conditionally add Auth)
+        req = urllib.request.Request(api_url)
+        if AUTH_HEADER_VAL:
+            req.add_header("Authorization", AUTH_HEADER_VAL)
+        
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
             
-            try:
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode())
+            title = data.get('title', f"YouTube ID: {video_id}")
+            
+            # Find best audio format
+            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
+            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
+            
+            itag = None
+            if audio_formats:
+                itag = audio_formats[0].get('itag')
+            else:
+                mixed = data.get('formatStreams', [])
+                if mixed: itag = mixed[0].get('itag')
+            
+            if itag:
+                # Build the Proxy URL
+                # local=true forces the traffic through the instance (hides your IP from Google)
+                initial_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
                 
-                title = data.get('title', f"YouTube ID: {video_id}")
-                
-                audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-                audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
-                
-                itag = None
-                if audio_formats:
-                    itag = audio_formats[0].get('itag')
-                else:
-                    mixed = data.get('formatStreams', [])
-                    if mixed: itag = mixed[0].get('itag')
-                
-                if itag:
-                    initial_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
-                    try:
-                        req_redirect = urllib.request.Request(initial_url, method="GET")
-                        if AUTH_HEADER_VAL:
-                            req_redirect.add_header("Authorization", AUTH_HEADER_VAL)
-                        req_redirect.add_header("Range", "bytes=0-1") 
-                        
-                        with urllib.request.urlopen(req_redirect, timeout=5) as resp:
-                            final_url = resp.geturl()
-                            print(f"[DEBUG] Resolved Stream URL: {final_url}")
-                            return final_url, f"YouTube: {title}", True
-                    except Exception as e:
-                        print(f"[REDIRECT ERROR] Could not resolve: {e}. Trying initial URL.")
-                        return initial_url, f"YouTube: {title}", True
-                else:
-                    print("[API WARNING] No itag found.")
-            except Exception as e:
-                print(f"[API FAIL] {e}")
+                # Resolve Redirects (To get the final tokenized URL)
+                try:
+                    req_redirect = urllib.request.Request(initial_url, method="GET")
+                    if AUTH_HEADER_VAL:
+                        req_redirect.add_header("Authorization", AUTH_HEADER_VAL)
+                    
+                    # Range header prevents downloading the file, just resolves the headers/url
+                    req_redirect.add_header("Range", "bytes=0-1") 
+                    
+                    with urllib.request.urlopen(req_redirect, timeout=5) as resp:
+                        final_url = resp.geturl()
+                        print(f"[DEBUG] Resolved Stream URL: {final_url}")
+                        return final_url, f"YouTube: {title}", True # True = Direct FFmpeg
+                except Exception as e:
+                    print(f"[REDIRECT ERROR] Could not resolve: {e}. Trying initial URL.")
+                    return initial_url, f"YouTube: {title}", True
+            else:
+                print("[API WARNING] No itag found.")
+        except Exception as e:
+            print(f"[API FAIL] {e}")
 
-        # --- SCENARIO 2: PUBLIC / NO-AUTH INSTANCE ---
-        else:
-            try:
-                parsed = urlparse(url)
-                inv_parsed = urlparse(INVIDIOUS_HOST)
-                
-                new_scheme = inv_parsed.scheme
-                new_netloc = inv_parsed.netloc
-                
-                if 'youtu.be' in parsed.netloc:
-                    new_path = '/watch'
-                    new_query = f"v={parsed.path.lstrip('/')}"
-                    if parsed.query:
-                        new_query += f"&{parsed.query}"
-                else:
-                    new_path = parsed.path
-                    new_query = parsed.query
-
-                new_url = urlunparse((new_scheme, new_netloc, new_path, parsed.params, new_query, parsed.fragment))
-                
-                print(f"[DEBUG] Converted to Invidious Page: {new_url}")
-                return new_url, "YouTube Video", False 
-                
-            except Exception as e:
-                print(f"https://stackoverflow.com/questions/48430836/rust-proper-error-handling-auto-convert-from-one-error-type-to-another-with-que {e}")
-
+    # Fallback for non-YouTube links (Soundcloud, etc)
     return url, "External Stream", False
 
 class AudioEngine:
