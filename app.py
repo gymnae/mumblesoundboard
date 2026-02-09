@@ -261,14 +261,14 @@ class AudioEngine:
         with self.lock:
             self._start_process_internal(cmd, capture_stderr=True, source_type='remote')
 
-    def play_via_ytdlp(self, url, display_title):
+def play_via_ytdlp(self, url, display_title):
         print(f"[DEBUG] Processing via yt-dlp: {url}")
         self._stop_existing_remote()
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist']
         
-        # Add Auth if configured (backup, though usually used in Scenario 1)
+        # Add Auth if configured
         if AUTH_HEADER_VAL:
             dlp_cmd.extend(['--add-header', f"Authorization: {AUTH_HEADER_VAL}"])
         
@@ -276,14 +276,29 @@ class AudioEngine:
         if os.path.exists(cookie_file):
              dlp_cmd.extend(['--cookies', cookie_file])
 
-        dlp_cmd.extend(['-f', 'bestaudio/best', '-o', '-'])
+        # Formatting & Networking
+        dlp_cmd.extend(['-f', 'bestaudio/best', '--force-ipv4', '--no-check-certificate', '-o', '-'])
         dlp_cmd.append(url)
 
+        # --- CHANGE: Capture Stderr to debug the silence ---
         try:
-            p_dlp = subprocess.Popen(dlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+            p_dlp = subprocess.Popen(
+                dlp_cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, # Capture error output
+                preexec_fn=os.setsid
+            )
         except Exception as e:
             print(f"[ERROR] yt-dlp fail: {e}")
             return
+
+        # Start a thread to print yt-dlp errors to console
+        def log_dlp_errors(proc):
+            for line in iter(proc.stderr.readline, b''):
+                print(f"[YT-DLP ERROR] {line.decode('utf-8', errors='ignore').strip()}")
+            proc.stderr.close()
+        t = threading.Thread(target=log_dlp_errors, args=(p_dlp,), daemon=True)
+        t.start()
 
         ffmpeg_cmd = ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
         
