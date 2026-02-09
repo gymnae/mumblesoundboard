@@ -95,7 +95,7 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- ROBUST URL RESOLVER ---
+# --- ROBUST URL RESOLVER (Updated) ---
 def resolve_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
@@ -104,6 +104,7 @@ def resolve_video_data(url):
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
+        # 1. Query API for metadata
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
@@ -114,6 +115,7 @@ def resolve_video_data(url):
             
             title = data.get('title', f"YouTube ID: {video_id}")
             
+            # 2. Find Best Audio Format
             audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
             audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
             
@@ -125,8 +127,28 @@ def resolve_video_data(url):
                 if mixed: itag = mixed[0].get('itag')
             
             if itag:
-                proxy_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
-                return proxy_url, f"YouTube: {title}", True
+                # 3. Construct the Proxy URL
+                initial_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
+                
+                # 4. RESOLVE THE REDIRECT (The Fix) 
+                # We ask Python to follow the redirect chain and get the FINAL stream URL.
+                # This ensures FFmpeg connects directly to the file without needing to negotiate Auth headers during a 302.
+                try:
+                    # We use a GET request (some servers block HEAD on streams)
+                    # We set a small range to avoid downloading the whole file just to resolve the URL
+                    req_redirect = urllib.request.Request(initial_url, method="GET")
+                    if AUTH_HEADER_VAL:
+                        req_redirect.add_header("Authorization", AUTH_HEADER_VAL)
+                    req_redirect.add_header("Range", "bytes=0-1") 
+                    
+                    with urllib.request.urlopen(req_redirect, timeout=5) as resp:
+                        final_url = resp.geturl()
+                        print(f"[DEBUG] Resolved Stream URL: {final_url}")
+                        return final_url, f"YouTube: {title}", True
+                except Exception as e:
+                    print(f"[REDIRECT ERROR] Could not resolve: {e}. Trying initial URL.")
+                    # Fallback
+                    return initial_url, f"YouTube: {title}", True
             else:
                 print("[API WARNING] No itag found. Falling back.")
                 
