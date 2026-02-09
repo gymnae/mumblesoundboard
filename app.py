@@ -32,7 +32,7 @@ CHANNEL = os.getenv("MUMBLE_CHANNEL", "")
 
 # --- INVIDIOUS CONFIGURATION ---
 # Now uses Environment Variables. Defaults to empty (No Auth) if not provided.
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
 INVIDIOUS_USER = os.getenv("INVIDIOUS_USER", "")
 INVIDIOUS_PASS = os.getenv("INVIDIOUS_PASS", "")
 
