@@ -13,7 +13,7 @@ import warnings
 import json
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import urlparse, urlunparse
 from flask import Flask, render_template, request, jsonify
 
 import pymumble_py3 as pymumble
@@ -32,7 +32,7 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
 # Strip trailing slash if present for clean URL building
 if INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
@@ -106,12 +106,8 @@ def resolve_video_data(url):
         video_id = match.group(1)
         
         # --- SCENARIO 1: AUTHENTICATED INSTANCE ---
-        # We must use the API to get the raw stream because scraping the 
-        # password-protected webpage with yt-dlp is difficult/flaky.
         if INVIDIOUS_USER and INVIDIOUS_PASS:
             api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
-            
-            # 1. Query API for metadata
             req = urllib.request.Request(api_url)
             if AUTH_HEADER_VAL:
                 req.add_header("Authorization", AUTH_HEADER_VAL)
@@ -122,7 +118,6 @@ def resolve_video_data(url):
                 
                 title = data.get('title', f"YouTube ID: {video_id}")
                 
-                # 2. Find Best Audio Format
                 audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
                 audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
                 
@@ -134,10 +129,7 @@ def resolve_video_data(url):
                     if mixed: itag = mixed[0].get('itag')
                 
                 if itag:
-                    # 3. Construct Proxy URL
                     initial_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
-                    
-                    # 4. Resolve Redirect (Get the raw googlevideo link to bypass Auth needs for FFmpeg)
                     try:
                         req_redirect = urllib.request.Request(initial_url, method="GET")
                         if AUTH_HEADER_VAL:
@@ -157,41 +149,31 @@ def resolve_video_data(url):
                 print(f"[API FAIL] {e}")
 
         # --- SCENARIO 2: PUBLIC / NO-AUTH INSTANCE ---
-        # Just swap the domain. Keep playlists and query params intact.
-        # This allows yt-dlp to handle the page naturally.
         else:
             try:
-                # Parse the input URL
                 parsed = urlparse(url)
-                
-                # Parse the Invidious Host
                 inv_parsed = urlparse(INVIDIOUS_HOST)
                 
-                # Reconstruct URL components
                 new_scheme = inv_parsed.scheme
                 new_netloc = inv_parsed.netloc
                 
-                # Handle short urls (youtu.be) -> convert to /watch?v=...
                 if 'youtu.be' in parsed.netloc:
                     new_path = '/watch'
                     new_query = f"v={parsed.path.lstrip('/')}"
-                    # Append original query params if any (e.g. t=timestamp)
                     if parsed.query:
                         new_query += f"&{parsed.query}"
                 else:
                     new_path = parsed.path
                     new_query = parsed.query
 
-                # Build the final Invidious URL
                 new_url = urlunparse((new_scheme, new_netloc, new_path, parsed.params, new_query, parsed.fragment))
                 
                 print(f"[DEBUG] Converted to Invidious Page: {new_url}")
-                return new_url, "YouTube Video", False # is_direct=False -> Use yt-dlp
+                return new_url, "YouTube Video", False 
                 
             except Exception as e:
                 print(f"https://stackoverflow.com/questions/48430836/rust-proper-error-handling-auto-convert-from-one-error-type-to-another-with-que {e}")
 
-    # Fallback
     return url, "External Stream", False
 
 class AudioEngine:
@@ -261,14 +243,13 @@ class AudioEngine:
         with self.lock:
             self._start_process_internal(cmd, capture_stderr=True, source_type='remote')
 
-def play_via_ytdlp(self, url, display_title):
+    def play_via_ytdlp(self, url, display_title):
         print(f"[DEBUG] Processing via yt-dlp: {url}")
         self._stop_existing_remote()
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
         dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist']
         
-        # Add Auth if configured
         if AUTH_HEADER_VAL:
             dlp_cmd.extend(['--add-header', f"Authorization: {AUTH_HEADER_VAL}"])
         
@@ -276,23 +257,20 @@ def play_via_ytdlp(self, url, display_title):
         if os.path.exists(cookie_file):
              dlp_cmd.extend(['--cookies', cookie_file])
 
-        # Formatting & Networking
         dlp_cmd.extend(['-f', 'bestaudio/best', '--force-ipv4', '--no-check-certificate', '-o', '-'])
         dlp_cmd.append(url)
 
-        # --- CHANGE: Capture Stderr to debug the silence ---
         try:
             p_dlp = subprocess.Popen(
                 dlp_cmd, 
                 stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, # Capture error output
+                stderr=subprocess.PIPE,
                 preexec_fn=os.setsid
             )
         except Exception as e:
             print(f"[ERROR] yt-dlp fail: {e}")
             return
 
-        # Start a thread to print yt-dlp errors to console
         def log_dlp_errors(proc):
             for line in iter(proc.stderr.readline, b''):
                 print(f"[YT-DLP ERROR] {line.decode('utf-8', errors='ignore').strip()}")
