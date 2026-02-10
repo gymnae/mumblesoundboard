@@ -32,7 +32,6 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-# NO DEFAULT HOST. Must be provided via Env Var.
 INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
 if INVIDIOUS_HOST and INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
@@ -97,49 +96,89 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- SIMPLE SCRAPER RESOLVER ---
+# --- PROXY REWRITE RESOLVER ---
 def resolve_video_data(url):
+    """
+    1. Query Invidious API to get the raw stream URL (usually googlevideo.com).
+    2. Rewrite that URL to point to INVIDIOUS_HOST with &local=true.
+    3. This forces the instance to proxy the traffic, bypassing Google 403s.
+    """
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match and INVIDIOUS_HOST:
         video_id = match.group(1)
+        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        watch_url = f"{INVIDIOUS_HOST}/watch?v={video_id}"
-        print(f"[DEBUG] Scraping Invidious Page: {watch_url}")
-        
-        req = urllib.request.Request(watch_url)
+        # 1. Fetch Metadata
+        req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
-        
+            print(f"[DEBUG] Fetching API with Auth: {api_url}")
+        else:
+            print(f"[DEBUG] Fetching API Anonymously: {api_url}")
+
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                html_bytes = response.read()
-                html = html_bytes.decode('utf-8', errors='ignore')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
             
-            # Extract Title
-            title_match = re.search(r'<title>(.*?)</title>', html)
-            title = title_match.group(1).replace(" - Invidious", "").strip() if title_match else f"YouTube ID: {video_id}"
+            title = data.get('title', f"YouTube ID: {video_id}")
             
-            # Extract Stream URL
-            stream_match = re.search(r'src="(/videoplayback\?[^"]+)"', html)
-            if not stream_match:
-                stream_match = re.search(r'src="(/latest_version\?[^"]+)"', html)
+            # 2. Find Best Audio Stream
+            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
+            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
             
-            if stream_match:
-                raw_stream = stream_match.group(1)
-                raw_stream = raw_stream.replace('&amp;', '&')
-                
-                final_url = f"{INVIDIOUS_HOST}{raw_stream}"
-                print(f"[DEBUG] Found Direct Stream in HTML: {final_url}")
-                return final_url, f"YouTube: {title}", True 
+            stream_url = None
+            if audio_formats:
+                stream_url = audio_formats[0].get('url')
             else:
-                print("[SCRAPE WARNING] Could not find 'src=' link. HTML scraping failed.")
-                return watch_url, f"YouTube: {title}", False # Fallback to yt-dlp
-
+                mixed = data.get('formatStreams', [])
+                if mixed: stream_url = mixed[0].get('url')
+            
+            if stream_url:
+                # 3. REWRITE TO FORCE PROXY
+                # If we get a raw Google URL, we swap the domain to our Invidious instance
+                # and add local=true. This avoids the 403 error from Google.
+                if "googlevideo.com" in stream_url:
+                    try:
+                        parsed_stream = urlparse(stream_url)
+                        parsed_inv = urlparse(INVIDIOUS_HOST)
+                        
+                        # Rebuild query with &local=true
+                        query = parsed_stream.query
+                        if "local=true" not in query:
+                            query += "&local=true"
+                            
+                        # Construct the new URL: 
+                        # https://<INVIDIOUS_HOST>/videoplayback?<params>&local=true
+                        final_url = urlunparse((
+                            parsed_inv.scheme, 
+                            parsed_inv.netloc, 
+                            parsed_stream.path, 
+                            parsed_stream.params, 
+                            query, 
+                            parsed_stream.fragment
+                        ))
+                        print(f"[DEBUG] Rewrote Google URL to Proxy: {final_url}")
+                        return final_url, f"YouTube: {title}", True
+                    except Exception as e:
+                        print(f"[REWRITE ERROR] {e}. Using original.")
+                
+                # Handle relative URLs (already proxies)
+                elif stream_url.startswith('/'):
+                    stream_url = f"{INVIDIOUS_HOST}{stream_url}"
+                    print(f"[DEBUG] Relative URL Resolved: {stream_url}")
+                    return stream_url, f"YouTube: {title}", True
+                
+                # Fallback (return what we found)
+                return stream_url, f"YouTube: {title}", True
+            else:
+                print("[API WARNING] No stream URL found in API response.")
+                
         except Exception as e:
-            print(f"[SCRAPE FAIL] {e}")
+            print(f"[API FAIL] {e}")
 
+    # Fallback to yt-dlp if API completely fails or no host configured
     return url, "External Stream", False
 
 class AudioEngine:
