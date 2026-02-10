@@ -32,7 +32,7 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
 if INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
 
