@@ -32,8 +32,9 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
-if INVIDIOUS_HOST.endswith('/'):
+# NO DEFAULT HOST. Must be provided via Env Var.
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
+if INVIDIOUS_HOST and INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
 
 INVIDIOUS_USER = os.getenv("INVIDIOUS_USER", "")
@@ -96,62 +97,49 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- PURE API RESOLVER ---
+# --- SIMPLE SCRAPER RESOLVER ---
 def resolve_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
     if match and INVIDIOUS_HOST:
         video_id = match.group(1)
-        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # 1. Build Request
-        # If user/pass are env vars, we add the header.
-        # If NOT, we send a standard, anonymous request.
-        req = urllib.request.Request(api_url)
+        watch_url = f"{INVIDIOUS_HOST}/watch?v={video_id}"
+        print(f"[DEBUG] Scraping Invidious Page: {watch_url}")
+        
+        req = urllib.request.Request(watch_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
-            print(f"[DEBUG] Fetching API with Auth: {api_url}")
-        else:
-            print(f"[DEBUG] Fetching API Anonymously: {api_url}")
-
+        
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html_bytes = response.read()
+                html = html_bytes.decode('utf-8', errors='ignore')
             
-            title = data.get('title', f"YouTube ID: {video_id}")
+            # Extract Title
+            title_match = re.search(r'<title>(.*?)</title>', html)
+            title = title_match.group(1).replace(" - Invidious", "").strip() if title_match else f"YouTube ID: {video_id}"
             
-            # 2. Extract Stream URL from JSON
-            # We look for audio-only streams sorted by bitrate
-            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
+            # Extract Stream URL
+            stream_match = re.search(r'src="(/videoplayback\?[^"]+)"', html)
+            if not stream_match:
+                stream_match = re.search(r'src="(/latest_version\?[^"]+)"', html)
             
-            stream_url = None
-            if audio_formats:
-                stream_url = audio_formats[0].get('url')
-            else:
-                # Fallback to mixed formats if no adaptive audio found
-                mixed = data.get('formatStreams', [])
-                if mixed: stream_url = mixed[0].get('url')
-            
-            if stream_url:
-                # 3. Handle Relative URLs
-                # Some instances return relative URLs (e.g. "/videoplayback?...")
-                # We must prepend the host.
-                if stream_url.startswith('/'):
-                    stream_url = f"{INVIDIOUS_HOST}{stream_url}"
+            if stream_match:
+                raw_stream = stream_match.group(1)
+                raw_stream = raw_stream.replace('&amp;', '&')
                 
-                print(f"[DEBUG] API Resolved Stream: {stream_url}")
-                return stream_url, f"YouTube: {title}", True # True = Direct Play (FFmpeg)
+                final_url = f"{INVIDIOUS_HOST}{raw_stream}"
+                print(f"[DEBUG] Found Direct Stream in HTML: {final_url}")
+                return final_url, f"YouTube: {title}", True 
             else:
-                print("[API WARNING] No stream URL found in API response.")
-                
-        except Exception as e:
-            print(f"[API FAIL] {e}")
-            # If API fails, we fall through to yt-dlp fallback, 
-            # though usually if API fails, yt-dlp might also fail on Invidious.
+                print("[SCRAPE WARNING] Could not find 'src=' link. HTML scraping failed.")
+                return watch_url, f"YouTube: {title}", False # Fallback to yt-dlp
 
-    # Fallback for non-YouTube links
+        except Exception as e:
+            print(f"[SCRAPE FAIL] {e}")
+
     return url, "External Stream", False
 
 class AudioEngine:
@@ -214,7 +202,7 @@ class AudioEngine:
         
         cmd = ['ffmpeg']
         if FFMPEG_HEADERS:
-             cmd.extend(['-headers', FFMPEG_HEADERS])
+             cmd.extend(['-headers', f"Authorization: {AUTH_HEADER_VAL}\r\n"])
              
         cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
         
