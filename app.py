@@ -32,7 +32,7 @@ PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
 CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
 
 # --- INVIDIOUS CONFIGURATION ---
-INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
+INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "https://tube.wxbu.de")
 if INVIDIOUS_HOST.endswith('/'):
     INVIDIOUS_HOST = INVIDIOUS_HOST[:-1]
 
@@ -96,7 +96,7 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- UNIFIED URL RESOLVER (API FOR ALL) ---
+# --- PURE API RESOLVER ---
 def resolve_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
@@ -105,55 +105,53 @@ def resolve_video_data(url):
         video_id = match.group(1)
         api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # Build request (Conditionally add Auth)
+        # 1. Build Request
+        # If user/pass are env vars, we add the header.
+        # If NOT, we send a standard, anonymous request.
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
-        
+            print(f"[DEBUG] Fetching API with Auth: {api_url}")
+        else:
+            print(f"[DEBUG] Fetching API Anonymously: {api_url}")
+
         try:
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
             
             title = data.get('title', f"YouTube ID: {video_id}")
             
-            # Find best audio format
+            # 2. Extract Stream URL from JSON
+            # We look for audio-only streams sorted by bitrate
             audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
             audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
             
-            itag = None
+            stream_url = None
             if audio_formats:
-                itag = audio_formats[0].get('itag')
+                stream_url = audio_formats[0].get('url')
             else:
+                # Fallback to mixed formats if no adaptive audio found
                 mixed = data.get('formatStreams', [])
-                if mixed: itag = mixed[0].get('itag')
+                if mixed: stream_url = mixed[0].get('url')
             
-            if itag:
-                # Build the Proxy URL
-                # local=true forces the traffic through the instance (hides your IP from Google)
-                initial_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag={itag}&local=true"
+            if stream_url:
+                # 3. Handle Relative URLs
+                # Some instances return relative URLs (e.g. "/videoplayback?...")
+                # We must prepend the host.
+                if stream_url.startswith('/'):
+                    stream_url = f"{INVIDIOUS_HOST}{stream_url}"
                 
-                # Resolve Redirects (To get the final tokenized URL)
-                try:
-                    req_redirect = urllib.request.Request(initial_url, method="GET")
-                    if AUTH_HEADER_VAL:
-                        req_redirect.add_header("Authorization", AUTH_HEADER_VAL)
-                    
-                    # Range header prevents downloading the file, just resolves the headers/url
-                    req_redirect.add_header("Range", "bytes=0-1") 
-                    
-                    with urllib.request.urlopen(req_redirect, timeout=5) as resp:
-                        final_url = resp.geturl()
-                        print(f"[DEBUG] Resolved Stream URL: {final_url}")
-                        return final_url, f"YouTube: {title}", True # True = Direct FFmpeg
-                except Exception as e:
-                    print(f"[REDIRECT ERROR] Could not resolve: {e}. Trying initial URL.")
-                    return initial_url, f"YouTube: {title}", True
+                print(f"[DEBUG] API Resolved Stream: {stream_url}")
+                return stream_url, f"YouTube: {title}", True # True = Direct Play (FFmpeg)
             else:
-                print("[API WARNING] No itag found.")
+                print("[API WARNING] No stream URL found in API response.")
+                
         except Exception as e:
             print(f"[API FAIL] {e}")
+            # If API fails, we fall through to yt-dlp fallback, 
+            # though usually if API fails, yt-dlp might also fail on Invidious.
 
-    # Fallback for non-YouTube links (Soundcloud, etc)
+    # Fallback for non-YouTube links
     return url, "External Stream", False
 
 class AudioEngine:
