@@ -98,11 +98,6 @@ def get_stats():
 
 # --- PROXY REWRITE RESOLVER ---
 def resolve_video_data(url):
-    """
-    1. Query Invidious API to get the raw stream URL (usually googlevideo.com).
-    2. Rewrite that URL to point to INVIDIOUS_HOST with &local=true.
-    3. This forces the instance to proxy the traffic, bypassing Google 403s.
-    """
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
@@ -137,8 +132,6 @@ def resolve_video_data(url):
             
             if stream_url:
                 # 3. REWRITE TO FORCE PROXY
-                # If we get a raw Google URL, we swap the domain to our Invidious instance
-                # and add local=true. This avoids the 403 error from Google.
                 if "googlevideo.com" in stream_url:
                     try:
                         parsed_stream = urlparse(stream_url)
@@ -149,8 +142,6 @@ def resolve_video_data(url):
                         if "local=true" not in query:
                             query += "&local=true"
                             
-                        # Construct the new URL: 
-                        # https://<INVIDIOUS_HOST>/videoplayback?<params>&local=true
                         final_url = urlunparse((
                             parsed_inv.scheme, 
                             parsed_inv.netloc, 
@@ -164,13 +155,12 @@ def resolve_video_data(url):
                     except Exception as e:
                         print(f"[REWRITE ERROR] {e}. Using original.")
                 
-                # Handle relative URLs (already proxies)
+                # Handle relative URLs
                 elif stream_url.startswith('/'):
                     stream_url = f"{INVIDIOUS_HOST}{stream_url}"
                     print(f"[DEBUG] Relative URL Resolved: {stream_url}")
                     return stream_url, f"YouTube: {title}", True
                 
-                # Fallback (return what we found)
                 return stream_url, f"YouTube: {title}", True
             else:
                 print("[API WARNING] No stream URL found in API response.")
@@ -178,7 +168,6 @@ def resolve_video_data(url):
         except Exception as e:
             print(f"[API FAIL] {e}")
 
-    # Fallback to yt-dlp if API completely fails or no host configured
     return url, "External Stream", False
 
 class AudioEngine:
@@ -381,37 +370,45 @@ class AudioEngine:
 audio_engine = AudioEngine()
 
 def mumble_loop():
-    print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
-    mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-    mumble.server_max_bandwidth = None 
-    mumble.start()
-    mumble.is_ready()
-    print("[MUMBLE] Connected.")
-
-    try:
-        mumble.set_bandwidth(96000)
-    except: pass
-
-    if CHANNEL:
-        print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
-        time.sleep(2) 
-        target = None
-        for channel_id, channel_obj in mumble.channels.items():
-            if channel_obj['name'] == CHANNEL:
-                target = channel_obj
-                break
-        if target:
-            mumble.users.myself.move_in(target['channel_id'])
-
-    next_tick = time.time()
     while True:
-        pcm_chunk = audio_engine.get_chunk()
-        if pcm_chunk:
-            mumble.sound_output.add_sound(pcm_chunk)
-        next_tick += PYMUMBLE_AUDIO_PER_PACKET
-        sleep_time = next_tick - time.time()
-        if sleep_time > 0: time.sleep(sleep_time)
-        else: next_tick = time.time()
+        try:
+            print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
+            mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
+            mumble.server_max_bandwidth = None 
+            mumble.start()
+            mumble.is_ready()
+            print("[MUMBLE] Connected.")
+
+            try:
+                mumble.set_bandwidth(96000)
+            except: pass
+
+            if CHANNEL:
+                print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
+                time.sleep(2) 
+                target = None
+                for channel_id, channel_obj in mumble.channels.items():
+                    if channel_obj['name'] == CHANNEL:
+                        target = channel_obj
+                        break
+                if target:
+                    mumble.users.myself.move_in(target['channel_id'])
+
+            next_tick = time.time()
+            while mumble.is_alive():
+                pcm_chunk = audio_engine.get_chunk()
+                if pcm_chunk:
+                    mumble.sound_output.add_sound(pcm_chunk)
+                next_tick += PYMUMBLE_AUDIO_PER_PACKET
+                sleep_time = next_tick - time.time()
+                if sleep_time > 0: time.sleep(sleep_time)
+                else: next_tick = time.time()
+        
+        except Exception as e:
+            print(f"[MUMBLE ERROR] Connection lost: {e}")
+        
+        print("[MUMBLE] Reconnecting in 5s...")
+        time.sleep(5)
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
