@@ -223,7 +223,7 @@ class AudioEngine:
                     remaining.append(p)
             self.active_processes = remaining
 
-    def play_direct_stream(self, url, display_title):
+def play_direct_stream(self, url, display_title):
         print(f"[DEBUG] FFMPEG Connecting to Direct Stream: {url}")
         self._stop_existing_remote() 
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
@@ -232,7 +232,14 @@ class AudioEngine:
         if FFMPEG_HEADERS:
              cmd.extend(['-headers', f"Authorization: {AUTH_HEADER_VAL}\r\n"])
              
-        cmd.extend(['-i', url, '-f', 's16le', '-ac', '1', '-ar', '48000', '-'])
+        # Add reconnect flags here before the input (-i) flag
+        cmd.extend([
+            '-reconnect', '1', 
+            '-reconnect_streamed', '1', 
+            '-reconnect_delay_max', '5',
+            '-i', url, 
+            '-f', 's16le', '-ac', '1', '-ar', '48000', '-'
+        ])
         
         with self.lock:
             self._start_process_internal(cmd, capture_stderr=True, source_type='remote')
