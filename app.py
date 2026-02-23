@@ -223,7 +223,7 @@ class AudioEngine:
                     remaining.append(p)
             self.active_processes = remaining
 
-def play_direct_stream(self, url, display_title):
+    def play_direct_stream(self, url, display_title):
         print(f"[DEBUG] FFMPEG Connecting to Direct Stream: {url}")
         self._stop_existing_remote() 
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
