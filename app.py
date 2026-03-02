@@ -96,78 +96,44 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
-# --- PROXY REWRITE RESOLVER ---
+# --- STRICT PROXY REWRITE RESOLVER ---
 def resolve_video_data(url):
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
     
-    if match and INVIDIOUS_HOST:
+    if match:
+        if not INVIDIOUS_HOST:
+            print("[SECURITY BLOCK] YouTube link detected, but INVIDIOUS_HOST is not set. Blocking connection to prevent direct Google contact.")
+            return None, None, False
+
         video_id = match.group(1)
-        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         
-        # 1. Fetch Metadata
+        # 1. Fetch Metadata (Title) ONLY via Invidious API
+        title = f"YouTube ID: {video_id}"
+        api_url = f"{INVIDIOUS_HOST}/api/v1/videos/{video_id}"
         req = urllib.request.Request(api_url)
         if AUTH_HEADER_VAL:
             req.add_header("Authorization", AUTH_HEADER_VAL)
-            print(f"[DEBUG] Fetching API with Auth: {api_url}")
-        else:
-            print(f"[DEBUG] Fetching API Anonymously: {api_url}")
-
+            
         try:
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
-            
-            title = data.get('title', f"YouTube ID: {video_id}")
-            
-            # 2. Find Best Audio Stream
-            audio_formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-            audio_formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
-            
-            stream_url = None
-            if audio_formats:
-                stream_url = audio_formats[0].get('url')
-            else:
-                mixed = data.get('formatStreams', [])
-                if mixed: stream_url = mixed[0].get('url')
-            
-            if stream_url:
-                # 3. REWRITE TO FORCE PROXY
-                if "googlevideo.com" in stream_url:
-                    try:
-                        parsed_stream = urlparse(stream_url)
-                        parsed_inv = urlparse(INVIDIOUS_HOST)
-                        
-                        # Rebuild query with &local=true
-                        query = parsed_stream.query
-                        if "local=true" not in query:
-                            query += "&local=true"
-                            
-                        final_url = urlunparse((
-                            parsed_inv.scheme, 
-                            parsed_inv.netloc, 
-                            parsed_stream.path, 
-                            parsed_stream.params, 
-                            query, 
-                            parsed_stream.fragment
-                        ))
-                        print(f"[DEBUG] Rewrote Google URL to Proxy: {final_url}")
-                        return final_url, f"YouTube: {title}", True
-                    except Exception as e:
-                        print(f"[REWRITE ERROR] {e}. Using original.")
-                
-                # Handle relative URLs
-                elif stream_url.startswith('/'):
-                    stream_url = f"{INVIDIOUS_HOST}{stream_url}"
-                    print(f"[DEBUG] Relative URL Resolved: {stream_url}")
-                    return stream_url, f"YouTube: {title}", True
-                
-                return stream_url, f"YouTube: {title}", True
-            else:
-                print("[API WARNING] No stream URL found in API response.")
-                
+                title = data.get('title', title)
         except Exception as e:
-            print(f"[API FAIL] {e}")
+            print(f"[API FAIL] Could not fetch title from Invidious: {e}")
 
+        # 2. STRICT INVIDIOUS PROXY STREAM
+        # itag=140   -> Requests the 128kbps audio-only stream (m4a)
+        # local=true -> Forces the Invidious server to download and proxy it to us
+        proxy_stream_url = f"{INVIDIOUS_HOST}/latest_version?id={video_id}&itag=140&local=true"
+        
+        print(f"[DEBUG] Forcing Strict Proxy Audio Stream: {proxy_stream_url}")
+        
+        # Returning is_direct=True guarantees ffmpeg processes this directly
+        # and yt-dlp is never triggered for YouTube URLs.
+        return proxy_stream_url, f"YouTube: {title}", True
+
+    # Allow non-YouTube URLs (e.g., direct mp3 links) to pass through naturally
     return url, "External Stream", False
 
 class AudioEngine:
