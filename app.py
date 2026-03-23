@@ -349,7 +349,7 @@ class AudioEngine:
     def set_volume_remote(self, vol):
         self.volume_remote = max(0.0, min(1.0, float(vol) / 100.0))
 
-def get_chunk(self):
+    def get_chunk(self):
         CHUNK_SIZE = 960 * 2 
         mixed_audio = [0] * 960
         
