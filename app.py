@@ -13,11 +13,18 @@ import warnings
 import json
 import urllib.request
 import urllib.error
+import fcntl
 from urllib.parse import urlparse, urlunparse
 from flask import Flask, render_template, request, jsonify
 
 import pymumble_py3 as pymumble
 from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
+
+def make_non_blocking(fd):
+    """Sets a file descriptor to non-blocking mode."""
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR) 
@@ -254,7 +261,7 @@ class AudioEngine:
         self._stop_existing_remote()
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
         
-        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--no-playlist']
+        dlp_cmd = ['yt-dlp', '--no-cache-dir', '--yes-playlist']
         
         if AUTH_HEADER_VAL:
             dlp_cmd.extend(['--add-header', f"Authorization: {AUTH_HEADER_VAL}"])
@@ -298,6 +305,8 @@ class AudioEngine:
         p_ffmpeg.source_type = 'remote' 
         p_ffmpeg.tag_filename = None
         
+        make_non_blocking(p_ffmpeg.stdout.fileno())
+        
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
@@ -313,6 +322,9 @@ class AudioEngine:
         process.source_proc = None
         process.source_type = source_type 
         process.tag_filename = tag_filename 
+        
+        # NEW: Make the ffmpeg output non-blocking
+        make_non_blocking(process.stdout.fileno())
         
         if capture_stderr:
             def log_errors(proc):
@@ -337,7 +349,7 @@ class AudioEngine:
     def set_volume_remote(self, vol):
         self.volume_remote = max(0.0, min(1.0, float(vol) / 100.0))
 
-    def get_chunk(self):
+def get_chunk(self):
         CHUNK_SIZE = 960 * 2 
         mixed_audio = [0] * 960
         
@@ -350,21 +362,47 @@ class AudioEngine:
         active_now = []
         
         for p in current_procs:
-            if p.poll() is not None: continue
+            # Initialize a persistent buffer for this process
+            if not hasattr(p, '_buffer'):
+                p._buffer = bytearray()
+                
+            # If process is dead and buffer is empty, skip
+            if p.poll() is not None and len(p._buffer) < CHUNK_SIZE:
+                self._kill_process(p)
+                continue
             
             try:
-                raw = p.stdout.read(CHUNK_SIZE)
-                if raw and len(raw) == CHUNK_SIZE:
-                    samples = struct.unpack(f"<{len(raw)//2}h", raw)
+                # Calculate how many bytes we need to complete a chunk
+                needed = CHUNK_SIZE - len(p._buffer)
+                if needed > 0:
+                    raw = p.stdout.read(needed)
+                    if raw:
+                        p._buffer.extend(raw)
+                        
+                # If we have collected a full chunk, process it
+                if len(p._buffer) >= CHUNK_SIZE:
+                    raw_chunk = bytes(p._buffer[:CHUNK_SIZE])
+                    p._buffer = p._buffer[CHUNK_SIZE:] # Keep remainder
+                    
+                    samples = struct.unpack(f"<{len(raw_chunk)//2}h", raw_chunk)
                     current_vol = self.volume_local if getattr(p, 'source_type', 'local') == 'local' else self.volume_remote
                     
                     for i, sample in enumerate(samples):
-                        val = int(sample * current_vol)
-                        mixed_audio[i] += val
+                        mixed_audio[i] += int(sample * current_vol)
+                        
                     active_now.append(p)
                 else:
-                    self._kill_process(p)
-            except: pass
+                    # Not enough data yet. Check if it died or is just buffering.
+                    if p.poll() is not None:
+                        self._kill_process(p)
+                    else:
+                        active_now.append(p) # Keep alive, wait for network
+                        
+            except BlockingIOError:
+                # Non-blocking IO exception: No data available right now, let it buffer
+                active_now.append(p)
+            except Exception as e:
+                self._kill_process(p)
 
         with self.lock:
             self.active_processes = [p for p in self.active_processes if p in active_now]
