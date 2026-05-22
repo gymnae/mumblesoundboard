@@ -3,3 +3,9 @@ pymumble==1.6.1
 yt-dlp
 ffmpeg-python==0.2.0
 gunicorn
+
+# Matrix Bot and WebRTC Audio (MatrixRTC via LiveKit)
+matrix-nio[e2e]
+livekit
+livekit-api
+PyYAML

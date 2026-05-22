@@ -10,7 +10,7 @@ A turnkey, lightweight, and secure Dockerized soundboard solution that connects 
 ## ✨ Features
 
 * **Retro 90s Design:** Web-safe colors, sticky control decks, marquees, and "Under Construction" GIFs.
-* **High-Quality Audio:** Streams at **96kbps** (Music Quality) to Mumble, using a jitter-free threading engine.
+* **High-Quality Audio:** Streams at **96kbps** (Music Quality) to Mumble and to Matrix using LiveKit MatrixRTC, powered by a jitter-free threading engine.
 * **Universal Playback:**
     * **Local Files:** Plays `.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac` from a mounted folder.
     * **YouTube Proxying:** The system is designed to **never contact YouTube directly**. It utilizes an [Invidious](https://invidious.io/) instance (e.g., `tube.wxbu.de`) to resolve streams via API, ensuring your server IP remains hidden from Google and bypassing "Sign in to confirm you're not a bot" blocks.
@@ -87,7 +87,27 @@ Open your browser and navigate to: http://your-server-ip:5000
 |INVIDIOUS_USER |	None |	Basic Auth Username for Invidious (if protected).|
 |INVIDIOUS_PASS |	None |	Basic Auth Password for Invidious.|
 
-## 🔒 Privacy & Proxying
+## � Matrix & LiveKit Integration (MatrixRTC)
+
+The unit features a dual-stack output, meaning it can stream audio to a Mumble server and a Matrix room simultaneously! Matrix integration operates via a local AppService bot that pushes WebRTC audio directly to your LiveKit SFU.
+
+### Setup Config
+Create your Matrix configuration based on the example:
+```bash
+cp matrix_config.example.yaml matrix_config.yaml
+```
+- `appservice_token`: The token your bot uses to authenticate with the homeserver.
+- `rooms`: A list of room IDs (`!xxx:exampe.com`) the bot should auto-join.
+- `livekit_url` & `livekit_token`: Point to your LiveKit SFU instance used for MatrixRTC.
+
+### Chat Commands
+Direct the bot from any joined Matrix room:
+- `!play <filename>` — Plays a local audio file (e.g. `!play horn.mp3`).
+- `!play <url>` — Streams a YouTube URL or direct MP3 link.
+- `!stop` — System-wide kill switch; stops all currently playing audio.
+- `!ping` — Fast health check to see if the bot is listening.
+
+## �🔒 Privacy & Proxying
 
 This application implements a strict proxying policy. If INVIDIOUS_HOST is configured, the system will resolve video streams via the Invidious API using ?local=true. This forces the Invidious server to proxy the traffic, meaning your server never establishes a direct connection to Google/YouTube servers, protecting your IP address and preventing 403/Bot bans.
 

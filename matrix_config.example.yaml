@@ -1,0 +1,14 @@
+# Matrix AppService Configuration
+homeserver: "https://matrix.example.com"
+user_id: "@soundbot:matrix.example.com"
+device_id: "SOUNDBOARD"
+appservice_token: "YOUR_APPSERVICE_TOKEN_HERE"
+
+# Rooms to join automatically on startup
+rooms:
+  - "!room_id_1:matrix.example.com"
+  - "!room_id_2:matrix.example.com"
+  
+# LiveKit connection details for MatrixRTC audio pushing
+livekit_url: "wss://your-livekit-instance.example.com"
+livekit_token: "YOUR_LIVEKIT_TOKEN_HERE"

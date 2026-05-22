@@ -462,6 +462,18 @@ def mumble_loop():
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
+# --- MATRIX BOT STARTUP ---
+def matrix_loop():
+    try:
+        import matrix_bot
+        print("[MATRIX] Starting Matrix AppService Bot...")
+        bot = matrix_bot.MatrixAppServiceBot(audio_engine=audio_engine)
+        bot.run_sync()
+    except Exception as e:
+        print(f"[MATRIX ERROR] Failed to start Matrix bot: {e}")
+
+threading.Thread(target=matrix_loop, daemon=True).start()
+
 @app.route('/')
 def index():
     sort_type = request.args.get('sort', 'alpha')
