@@ -16,6 +16,7 @@ Flow (matches https://github.com/gymnae/meet):
 
 import threading
 import asyncio
+import array
 import os
 import json
 import urllib.request
@@ -34,8 +35,14 @@ class MeetBot:
 
         # MEET_URL points at the Meet web app / token gateway
         # (e.g. https://meet.example.com). LIVEKIT_URL is a fallback if the
-        # gateway does not return a serverUrl.
-        self.meet_base_url = (os.getenv("MEET_URL") or "").rstrip('/')
+        # gateway does not return a serverUrl. Accept legacy ws(s):// values
+        # and normalize them to http(s):// for the HTTP token request.
+        base = (os.getenv("MEET_URL") or "").rstrip('/')
+        if base.startswith('wss://'):
+            base = 'https://' + base[len('wss://'):]
+        elif base.startswith('ws://'):
+            base = 'http://' + base[len('ws://'):]
+        self.meet_base_url = base
         fallback_lk = (os.getenv("LIVEKIT_URL") or "").rstrip('/')
         if fallback_lk and not fallback_lk.startswith(('ws://', 'wss://')):
             fallback_lk = 'wss://' + fallback_lk
@@ -94,6 +101,11 @@ class MeetBot:
                 return False, ("Meet integration not configured "
                                "(MEET_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET missing).")
 
+            # tear down any stale previous session to avoid duplicate bots
+            if self._thread and self._thread.is_alive():
+                self._stop_event.set()
+                self._thread.join(timeout=10)
+
             self.room_name = room
             self.password = password
             self.error = None
@@ -136,6 +148,13 @@ class MeetBot:
             print(f"[MEET ERROR] {e}")
             with self.lock:
                 self.error = str(e)
+            # make sure a partially-connected session is torn down
+            room = self._room
+            if room is not None:
+                try:
+                    room.disconnect()
+                except Exception:
+                    pass
         finally:
             with self.lock:
                 self.connected = False
@@ -172,8 +191,10 @@ class MeetBot:
                     pcm = await asyncio.wait_for(self._queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
-                frame = rtc.AudioFrame.create(960, 48000, 1)
-                frame.data = pcm[:1920]
+                # AudioFrame.data is a writable int16 memoryview in
+                # livekit-rtc 0.18.x; copy the s16le PCM into it
+                frame = rtc.AudioFrame.create(48000, 1, 960)
+                frame.data[:] = array.array('h', pcm[:1920])
                 await self._source.capture_frame(frame)
 
         publisher_task = asyncio.ensure_future(publisher())
