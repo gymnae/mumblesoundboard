@@ -86,6 +86,29 @@ Open your browser and navigate to: http://your-server-ip:5000
 |INVIDIOUS_HOST |	None | 	Base URL of Invidious instance (e.g. https://tube.wxbu.de).|
 |INVIDIOUS_USER |	None |	Basic Auth Username for Invidious (if protected).|
 |INVIDIOUS_PASS |	None |	Basic Auth Password for Invidious.|
+|MEET_URL |	None |	Base URL of the LiveKit server behind your meet install (e.g. wss://meet.wxbu.de or livekit.meet.wxbu.de).|
+|LIVEKIT_API_KEY |	None |	LiveKit API key used to mint the SoundBot's join token.|
+|LIVEKIT_API_SECRET |	None |	LiveKit API secret used to mint the SoundBot's join token.|
+
+## 📺 Meet / LiveKit Session Integration
+
+In addition to Mumble and Matrix, the soundboard can connect to a [meet](https://github.com/gymnae/meet) session (e.g. https://meet.wxbu.de) — a LiveKit-based WebRTC videochat. No changes to the meet installation are required.
+
+**One Meet session at a time.** Configure the LiveKit credentials via env vars and pick the room from the web UI:
+
+```bash
+  -e MEET_URL="wss://your-livekit-endpoint" \
+  -e LIVEKIT_API_KEY="yourkey" \
+  -e LIVEKIT_API_SECRET="yoursecret" \
+```
+
+Then in the web UI, enter the **room name** (and optional **password**, forwarded as token metadata) and press **CONNECT**. The bot joins as a participant named `SoundBot` and streams the soundboard's mixed audio into the session. Use **DISCONNECT** or `GET /meet/disconnect` to leave. The Mumble and Matrix integrations keep working independently and simultaneously.
+
+HTTP API:
+
+- `GET /meet/connect?room=<name>&password=<optional>` — connect to a session
+- `GET /meet/disconnect` — leave the current session
+- `GET /meet/status` — JSON connection status
 
 ## � Matrix & LiveKit Integration (MatrixRTC)
 

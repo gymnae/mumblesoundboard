@@ -224,8 +224,18 @@
         </center>
         <br>
 
+        <div class="toolbar" style="background:#004080;">
+            <b>MEET SESSION (LiveKit)</b>
+            <br><br>
+            <div id="meet-status" style="font-size:11px;">NOT CONFIGURED</div>
+            <br>
+            <input type="text" id="meet-room" class="input-retro" placeholder="Room name...">
+            <input type="password" id="meet-pass" class="input-retro" style="width:120px;" placeholder="Password...">
+            <button id="meet-btn" onclick="meetToggle()">CONNECT</button>
+        </div>
+
         <div class="toolbar">
-            Sort by: 
+            Sort by:
             <a href="/?sort=alpha">[A-Z]</a> | 
             <a href="/?sort=pop">[Most Popular]</a>
             <br>
@@ -313,8 +323,10 @@
         function updateStatus(data) {
             const lamp = document.getElementById('lamp');
             const text = document.getElementById('lamp-text');
-            const info = document.getElementById('track-info');
-            
+           const info = document.getElementById('track-info');
+
+           updateMeetStatus(data.meet);
+
             if(data.playing) {
                 lamp.classList.add('active');
                 text.classList.add('active');
@@ -337,6 +349,49 @@
                 info.style.display = 'none';
             }
         }
+
+       let meetConnected = false;
+
+       function updateMeetStatus(meet) {
+           if (!meet) return;
+           const statusEl = document.getElementById('meet-status');
+           const btn = document.getElementById('meet-btn');
+           meetConnected = meet.connected;
+           if (!meet.configured) {
+               statusEl.innerText = "NOT CONFIGURED (MEET_URL / API KEY MISSING)";
+               btn.disabled = true;
+           } else if (meet.connected) {
+               statusEl.innerText = "CONNECTED TO: " + meet.room;
+               statusEl.style.color = "#00FF00";
+               btn.innerText = "DISCONNECT";
+           } else if (meet.error) {
+               statusEl.innerText = "ERROR: " + meet.error;
+               statusEl.style.color = "#FF0000";
+               btn.innerText = "CONNECT";
+           } else {
+               statusEl.innerText = "READY - NOT CONNECTED";
+               statusEl.style.color = "#FFFF00";
+               btn.innerText = "CONNECT";
+           }
+       }
+
+       function meetToggle() {
+           const btn = document.getElementById('meet-btn');
+           if (meetConnected) {
+               fetch('/meet/disconnect');
+               return;
+           }
+           const room = document.getElementById('meet-room').value;
+           const pass = document.getElementById('meet-pass').value;
+           if (!room) { alert("Enter a room name!"); return; }
+           btn.disabled = true;
+           fetch('/meet/connect?room=' + encodeURIComponent(room) + '&password=' + encodeURIComponent(pass))
+               .then(r => r.text().then(t => ({ok: r.ok, text: t})))
+               .then(res => {
+                   if (!res.ok) { alert(res.text); btn.disabled = false; }
+                   document.getElementById('meet-pass').value = '';
+               });
+       }
 
         setInterval(checkStatus, 1000);
     </script>

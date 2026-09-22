@@ -419,12 +419,46 @@ class AudioEngine:
 
 audio_engine = AudioEngine()
 
+# --- MEET (LiveKit) BOT ---
+from meet_bot import MeetBot
+meet_bot = MeetBot(audio_engine)
+
+# --- CENTRAL MIXER ---
+# A single mixer thread pulls the mixed PCM from the audio engine at
+# real-time pace (20ms chunks) and fans it out to all registered outputs
+# (Mumble and/or Meet/LiveKit).
+import queue
+
+mumble_queue = queue.Queue(maxsize=100)
+
+def mixer_loop():
+    next_tick = time.time()
+    while True:
+        pcm_chunk = audio_engine.get_chunk()
+        if pcm_chunk:
+            # feed Meet (non-blocking; drops chunk if consumer is behind)
+            meet_bot.feed(pcm_chunk)
+            # feed Mumble (drop oldest chunk if consumer is behind)
+            try:
+                mumble_queue.put_nowait(pcm_chunk)
+            except queue.Full:
+                try: mumble_queue.get_nowait()
+                except queue.Empty: pass
+                try: mumble_queue.put_nowait(pcm_chunk)
+                except queue.Full: pass
+        next_tick += PYMUMBLE_AUDIO_PER_PACKET
+        sleep_time = next_tick - time.time()
+        if sleep_time > 0: time.sleep(sleep_time)
+        else: next_tick = time.time()
+
+threading.Thread(target=mixer_loop, daemon=True).start()
+
 def mumble_loop():
     while True:
         try:
             print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
             mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-            mumble.server_max_bandwidth = None 
+            mumble.server_max_bandwidth = None
             mumble.start()
             mumble.is_ready()
             print("[MUMBLE] Connected.")
@@ -435,7 +469,7 @@ def mumble_loop():
 
             if CHANNEL:
                 print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
-                time.sleep(2) 
+                time.sleep(2)
                 target = None
                 for channel_id, channel_obj in mumble.channels.items():
                     if channel_obj['name'] == CHANNEL:
@@ -444,15 +478,12 @@ def mumble_loop():
                 if target:
                     mumble.users.myself.move_in(target['channel_id'])
 
-            next_tick = time.time()
             while mumble.is_alive():
-                pcm_chunk = audio_engine.get_chunk()
-                if pcm_chunk:
+                try:
+                    pcm_chunk = mumble_queue.get(timeout=0.1)
                     mumble.sound_output.add_sound(pcm_chunk)
-                next_tick += PYMUMBLE_AUDIO_PER_PACKET
-                sleep_time = next_tick - time.time()
-                if sleep_time > 0: time.sleep(sleep_time)
-                else: next_tick = time.time()
+                except queue.Empty:
+                    continue
         
         except Exception as e:
             print(f"[MUMBLE ERROR] Connection lost: {e}")
@@ -538,8 +569,27 @@ def get_status():
     is_playing = len(audio_engine.active_processes) > 0
     return jsonify({
         'playing': is_playing,
-        'meta': audio_engine.current_metadata if is_playing else None
+        'meta': audio_engine.current_metadata if is_playing else None,
+        'meet': meet_bot.status()
     })
+
+@app.route('/meet/connect', methods=['GET', 'POST'])
+def meet_connect():
+    room = request.args.get('room') or request.form.get('room', '')
+    password = request.args.get('password') or request.form.get('password', '')
+    if not room:
+        return "No room given", 400
+    ok, msg = meet_bot.connect(room.strip(), password)
+    return ("Meet connect: " + msg, 200) if ok else (msg, 409)
+
+@app.route('/meet/disconnect')
+def meet_disconnect():
+    ok, msg = meet_bot.disconnect()
+    return ("Meet disconnect: " + msg, 200) if ok else (msg, 409)
+
+@app.route('/meet/status')
+def meet_status():
+    return jsonify(meet_bot.status())
 
 @app.route('/stats')
 def view_stats():
