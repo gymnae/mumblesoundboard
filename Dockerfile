@@ -23,8 +23,11 @@ RUN mkdir -p /app/data /app/sounds && \
     chown -R appuser:appuser /app
 
 # 4. Environment Variables
+# pymumble's generated code (protoc <3.19) needs the pure-Python protobuf
+# implementation when running under protobuf 4.x
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 # 5. Install Dependencies (now includes gunicorn)
 COPY requirements.txt .
