@@ -9,3 +9,7 @@ matrix-nio[e2e]
 livekit
 livekit-api
 PyYAML
+
+# protobuf 5+ drops google.protobuf.internal.builder which breaks
+# generated stubs from other deps; pin to a mutually compatible series
+protobuf<5
