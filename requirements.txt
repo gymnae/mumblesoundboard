@@ -10,10 +10,9 @@ livekit
 livekit-api
 PyYAML
 
-# opuslib (via pymumble) hard-pins protobuf==3.12.2, but livekit-protocol's
-# generated code needs google.protobuf.internal.builder (protobuf >=4.21).
-# We therefore force protobuf 4.x in the Dockerfile after the main install,
-# and install opuslib with --no-deps to skip its conflicting pin.
-protobuf>=4.21,<5
+# NOTE: pymumble/opuslib hard-pin protobuf==3.12.2, but livekit-protocol
+# needs protobuf >=4.21 (google.protobuf.internal.builder). The conflict is
+# resolved in the Dockerfile: pymumble/opuslib are installed with --no-deps
+# and protobuf is force-upgraded to 4.x afterwards.
 six
 cffi
