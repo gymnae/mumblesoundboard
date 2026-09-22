@@ -1,17 +1,25 @@
 """
 LiveKit / Meet (meet.wxbu.de) integration for the Mumble Retro Soundboard.
 
-Connects as a headless participant (bot) to a LiveKit room and streams the
+Connects as a headless participant (bot) to a Meet room and streams the
 audio engine's mixed PCM output into the room. One Meet session at a time.
 
-The LiveKit server URL and API credentials are provided via environment
-variables (MEET_URL / LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET).
-Room name and optional password come from the web UI.
+The Meet gateway URL and API credentials are provided via environment
+variables (MEET_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET). Room name and
+optional password come from the web UI.
+
+Flow (matches https://github.com/gymnae/meet):
+  1. POST {MEET_URL}/api/token  {roomName, nickname, password}
+     -> { token, serverUrl }   (serverUrl = the actual LiveKit endpoint)
+  2. Connect to serverUrl with the returned JWT and publish audio.
 """
 
 import threading
 import asyncio
 import os
+import json
+import urllib.request
+import urllib.error
 
 
 class MeetBot:
@@ -24,11 +32,15 @@ class MeetBot:
         self.connected = False
         self.error = None
 
-        self.livekit_url = (
-            os.getenv("MEET_URL")
-            or os.getenv("LIVEKIT_URL")
-            or ""
-        ).rstrip('/')
+        # MEET_URL points at the Meet web app / token gateway
+        # (e.g. https://meet.example.com). LIVEKIT_URL is a fallback if the
+        # gateway does not return a serverUrl.
+        self.meet_base_url = (os.getenv("MEET_URL") or "").rstrip('/')
+        fallback_lk = (os.getenv("LIVEKIT_URL") or "").rstrip('/')
+        if fallback_lk and not fallback_lk.startswith(('ws://', 'wss://')):
+            fallback_lk = 'wss://' + fallback_lk
+        self._fallback_livekit_url = fallback_lk
+
         self.api_key = os.getenv("LIVEKIT_API_KEY", "")
         self.api_secret = os.getenv("LIVEKIT_API_SECRET", "")
 
@@ -39,26 +51,38 @@ class MeetBot:
         self._stop_event = threading.Event()
         self._thread = None
 
-        # allow wss:// URLs directly or plain hostnames
-        if self.livekit_url and not self.livekit_url.startswith(('ws://', 'wss://')):
-            self.livekit_url = 'wss://' + self.livekit_url
-
     @property
     def configured(self):
-        return bool(self.livekit_url and self.api_key and self.api_secret)
+        return bool(self.meet_base_url and self.api_key and self.api_secret)
 
-    def _mint_token(self, room, identity):
-        from livekit.api import AccessToken, VideoGrants
+    def _request_token(self):
+        """Ask the Meet gateway for a join token + LiveKit server URL."""
+        # Normalize the room name exactly like the Meet backend does
+        clean_room = self.room_name.strip().lower()
+        clean_room = ''.join(c for c in clean_room if c.isalnum() or c in '-_')
 
-        token = AccessToken(self.api_key, self.api_secret) \
-            .with_identity(identity) \
-            .with_name(identity) \
-            .with_grants(VideoGrants(room_join=True, room=room, can_publish=True))
-        if self.password:
-            # forward password as token metadata; a customized meet backend
-            # may validate it, LiveKit itself ignores it
-            token = token.with_metadata(self.password)
-        return token.to_jwt()
+        payload = json.dumps({
+            'roomName': clean_room,
+            'nickname': "SoundBot",
+            'password': self.password or "",
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{self.meet_base_url}/api/token",
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        token = data.get('token')
+        server_url = data.get('serverUrl') or self._fallback_livekit_url
+        if not token or not server_url:
+            raise RuntimeError("Meet gateway returned no token/serverUrl")
+        if data.get('requiresPassword'):
+            raise RuntimeError("Room requires a password")
+        return token, server_url
 
     # --- public API ------------------------------------------------------
 
@@ -123,13 +147,13 @@ class MeetBot:
     async def _run_async(self):
         from livekit import rtc
 
-        token = self._mint_token(self.room_name, "SoundBot")
+        token, server_url = self._request_token()
         room = rtc.Room()
         self._room = room
         self._queue = asyncio.Queue(maxsize=50)
 
-        print(f"[MEET] Connecting to {self.livekit_url} room '{self.room_name}'...")
-        await room.connect(self.livekit_url, token)
+        print(f"[MEET] Connecting to {server_url} room '{self.room_name}'...")
+        await room.connect(server_url, token)
         print("[MEET] Connected.")
 
         self._source = rtc.AudioSource(48000, 1)
