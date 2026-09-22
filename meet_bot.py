@@ -172,8 +172,14 @@ class MeetBot:
         self._queue = asyncio.Queue(maxsize=50)
 
         print(f"[MEET] Connecting to {server_url} room '{self.room_name}'...")
-        await room.connect(server_url, token)
-        print("[MEET] Connected.")
+        # ICE over all transports: containers behind NAT often block outbound
+        # UDP, which otherwise leads to 'wait_pc_connection timed out'.
+        # TRANSPORT_ALL lets the peer connection also try TCP/relay candidates.
+        rtc_config = rtc.RtcConfiguration(
+            ice_transport_type=rtc.IceTransportType.TRANSPORT_ALL,
+        )
+        await room.connect(server_url, token, rtc.RoomOptions(rtc_config=rtc_config))
+        print("[MEET] Connected (media path established).")
 
         self._source = rtc.AudioSource(48000, 1)
         track = rtc.LocalAudioTrack.create_audio_track("Soundboard", self._source)
