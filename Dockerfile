@@ -1,10 +1,15 @@
 # Use Python 3.11 Slim (Debian Bookworm)
 FROM python:3.11-slim-bookworm
 
-# 1. Install runtime dependencies
+# 1. Install runtime dependencies (stable layer, rarely changes -> good cache hits)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1b. Install build dependencies (separate layer so runtime layer stays cached).
+#     These are only needed to build Matrix E2E (python-olm) wheels.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libolm-dev gcc python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,8 +28,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # 5. Install Dependencies (now includes gunicorn)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir --upgrade yt-dlp
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt && \
+    pip install --upgrade yt-dlp
 
 # 6. Copy App Code
 COPY . .
