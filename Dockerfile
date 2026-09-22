@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt && \
     pip install --no-deps pymumble==1.6.1 opuslib==3.0.1 && \
     pip install --upgrade "protobuf>=4.21,<5" && \
-    python -c "from google.protobuf.internal import builder; import opuslib, pymumble_pytorch, nio, livekit, livekit.api; print('deps OK')"
+    python -c "from google.protobuf.internal import builder; import opuslib, pymumble_py3, nio, livekit, livekit.api; print('deps OK')"
 
 # 6. Copy App Code
 COPY . .
