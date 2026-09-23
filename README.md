@@ -92,8 +92,9 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MEET_BOT_NAME |	MUMBLE_USER |	Display name of the bot inside the meet session (defaults to MUMBLE_USER).|
 |LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by meet.|
 |LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked.|
-|LIVEKIT_ICE_USERNAME |	None |	TURN username.|
+|LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
 |LIVEKIT_ICE_CREDENTIAL |	None |	TURN password.|
+|LIVEKIT_ICE_SECRET |	None |	TURN static auth secret (coturn `use-static-auth`). The bot generates ephemeral credentials automatically.|
 
 ## 📺 Meet / LiveKit Session Integration
 

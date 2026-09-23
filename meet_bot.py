@@ -18,6 +18,10 @@ import threading
 import asyncio
 import os
 import json
+import hmac
+import base64
+import hashlib
+import time
 import urllib.request
 import urllib.error
 
@@ -58,14 +62,26 @@ class MeetBot:
 
         # Optional: explicit ICE servers (TURN) for the media path.
         # LIVEKIT_ICE_URLS = comma separated, e.g. "turn:turn.example.com:443?transport=tcp"
-        # LIVEKIT_ICE_USERNAME / LIVEKIT_ICE_CREDENTIAL for auth.
+        # Auth: either LIVEKIT_ICE_USERNAME + LIVEKIT_ICE_CREDENTIAL, or a
+        # static auth secret (coturn use-static-auth / REST API) via
+        # LIVEKIT_ICE_SECRET, in which case ephemeral credentials are
+        # generated (username=<expiry>, credential=base64(hmac_sha1(secret, username))).
         ice_urls = [u for u in (os.getenv("LIVEKIT_ICE_URLS") or "").split(',') if u.strip()]
         self._ice_servers = []
         if ice_urls:
+            username = os.getenv("LIVEKIT_ICE_USERNAME", "")
+            credential = os.getenv("LIVEKIT_ICE_CREDENTIAL", "")
+            if not credential:
+                secret = os.getenv("LIVEKIT_ICE_SECRET", "")
+                if secret:
+                    # ephemeral credentials valid for 6 hours
+                    username = str(int(time.time()) + 3600)
+                    digest = hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+                    credential = base64.b64encode(digest).decode()
             self._ice_servers.append({
                 'urls': ice_urls,
-                'username': os.getenv("LIVEKIT_ICE_USERNAME", ""),
-                'credential': os.getenv("LIVEKIT_ICE_CREDENTIAL", ""),
+                'username': username,
+                'credential': credential,
             })
 
         # Bot display name in the meet session: reuse the Mumble bot name
