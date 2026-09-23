@@ -37,8 +37,20 @@ class MatrixAppServiceBot:
             except PermissionError:
                 logger.warning("Cannot write %s (read-only). Starting with defaults.", self.config_path)
         except PermissionError:
-            logger.warning("Cannot read %s (permission denied). Check file ownership (uid 1000).", self.config_path)
-            raise
+            logger.warning(
+                "Cannot read %s (permission denied). Run: chown 1000:1000 %s on the host. "
+                "Matrix bot starting with defaults (will not connect).",
+                self.config_path, self.config_path,
+            )
+            self.config = {
+                "homeserver": "https://matrix.org",
+                "user_id": "@soundbot:matrix.org",
+                "device_id": "SOUNDBOARD",
+                "appservice_token": "YOUR_AS_TOKEN",
+                "rooms": [],
+                "livekit_url": "",
+                "livekit_token": ""
+            }
 
     async def push_audio_loop(self):
         """Continuously pulls PCM audio from the soundboard engine and sends it to LiveKit"""
