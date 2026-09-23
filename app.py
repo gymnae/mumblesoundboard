@@ -1,4 +1,5 @@
 import ssl
+import asyncio
 import threading
 import logging
 import re
@@ -496,6 +497,9 @@ threading.Thread(target=mumble_loop, daemon=True).start()
 # --- MATRIX BOT STARTUP ---
 def matrix_loop():
     try:
+        # matrix-nio needs an event loop in whichever thread it runs in
+        asyncio.new_event_loop()
+        asyncio.set_event_loop(asyncio.new_event_loop())
         import matrix_bot
         print("[MATRIX] Starting Matrix AppService Bot...")
         bot = matrix_bot.MatrixAppServiceBot(audio_engine=audio_engine)

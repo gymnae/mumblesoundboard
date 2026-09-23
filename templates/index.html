@@ -218,10 +218,10 @@
             position: fixed;
             top: 0; left: 0;
             width: 100%; height: 100%;
-            background: rgba(0,0,0,0.7);
             z-index: 2000;
-            align-items: center;
+            align-items: flex-end;
             justify-content: center;
+            pointer-events: none; /* let the page below stay clickable */
         }
         .overlay-backdrop.open { display: flex; }
 
@@ -235,6 +235,9 @@
             max-width: 90%;
             box-shadow: 5px 5px 0 #000;
             color: #000;
+            pointer-events: auto;
+            /* dock the window at the bottom, above the fixed control deck */
+            margin-bottom: 120px;
         }
 
         .meet-titlebar {
@@ -350,7 +353,7 @@
     </div>
  
     <!-- MEET SESSION CONNECTION OVERLAY WINDOW -->
-    <div id="meet-overlay" class="overlay-backdrop" onclick="if(event.target===this) closeMeetWindow()">
+    <div id="meet-overlay" class="overlay-backdrop">
         <div class="meet-window">
             <div class="meet-titlebar">
                 <span>📶 MEET SESSION</span>

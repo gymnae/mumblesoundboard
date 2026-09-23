@@ -51,6 +51,23 @@ class MeetBot:
         self.api_key = os.getenv("LIVEKIT_API_KEY", "")
         self.api_secret = os.getenv("LIVEKIT_API_SECRET", "")
 
+        # Optional: force a specific LiveKit signal URL, e.g. the internal
+        # wireguard address (ws://10.1.1.x:7880) to avoid hairpinning through
+        # the public internet. Takes precedence over serverUrl from meet.
+        self._override_livekit_url = (os.getenv("LIVEKIT_FORCE_URL") or "").rstrip('/') or None
+
+        # Optional: explicit ICE servers (TURN) for the media path.
+        # LIVEKIT_ICE_URLS = comma separated, e.g. "turn:turn.example.com:443?transport=tcp"
+        # LIVEKIT_ICE_USERNAME / LIVEKIT_ICE_CREDENTIAL for auth.
+        ice_urls = [u for u in (os.getenv("LIVEKIT_ICE_URLS") or "").split(',') if u.strip()]
+        self._ice_servers = []
+        if ice_urls:
+            self._ice_servers.append({
+                'urls': ice_urls,
+                'username': os.getenv("LIVEKIT_ICE_USERNAME", ""),
+                'credential': os.getenv("LIVEKIT_ICE_CREDENTIAL", ""),
+            })
+
         # Bot display name in the meet session: reuse the Mumble bot name
         # unless an explicit MEET_BOT_NAME is set.
         self.bot_name = os.getenv("MEET_BOT_NAME") or os.getenv("MUMBLE_USER", "SoundBot")
@@ -93,6 +110,9 @@ class MeetBot:
             raise RuntimeError("Meet gateway returned no token/serverUrl")
         if data.get('requiresPassword'):
             raise RuntimeError("Room requires a password")
+        # allow forcing the signal endpoint (e.g. internal wireguard address)
+        if self._override_livekit_url:
+            server_url = self._override_livekit_url
         return token, server_url
 
     # --- public API ------------------------------------------------------
@@ -163,7 +183,7 @@ class MeetBot:
             room = self._room
             if room is not None:
                 try:
-                    room.disconnect()
+                    self._loop.run_until_complete(room.disconnect())
                 except Exception:
                     pass
         finally:
@@ -190,7 +210,18 @@ class MeetBot:
         rtc_config = rtc.RtcConfiguration(
             ice_transport_type=rtc.IceTransportType.TRANSPORT_ALL,
         )
-        await room.connect(server_url, token, rtc.RoomOptions(rtc_config=rtc_config))
+        room_options = rtc.RoomOptions(rtc_config=rtc_config)
+        if self._ice_servers:
+            ice_servers = []
+            for s in self._ice_servers:
+                ice_servers.append(rtc.IceServer(
+                    urls=s['urls'],
+                    username=s['username'] or None,
+                    credential=s['credential'] or None,
+                ))
+            room_options.ice_servers = ice_servers
+            print(f"[MEET] Using explicit ICE servers: {self._ice_servers[0]['urls']}")
+        await room.connect(server_url, token, room_options)
         print("[MEET] Connected (media path established).")
 
         self._source = rtc.AudioSource(48000, 1)

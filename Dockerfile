@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 2. Security: Create non-root user
 RUN useradd -m -u 1000 appuser
 
+# gunicorn's control server writes to $HOME; make sure it's writable
+ENV HOME=/app
+
 WORKDIR /app
 
 # 3. Setup Permissions
