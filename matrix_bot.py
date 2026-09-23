@@ -141,7 +141,17 @@ class MatrixAppServiceBot:
             ignore_unverified_devices=True
         )
 
+    @property
+    def configured(self):
+        token = self.config.get("appservice_token", "")
+        return bool(token) and token != "YOUR_AS_TOKEN"
+
     async def start(self):
+        if not self.configured:
+            logger.warning(
+                "Matrix bot not configured (no valid appservice_token). Skipping sync loop."
+            )
+            return
         # Configure local state store for holding E2E keys and session data
         data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         store_path = os.path.join(data_dir, "nio_store")

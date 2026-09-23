@@ -304,14 +304,6 @@
         </center>
         <br>
 
-        <div class="meet-launcher">
-            <b>MEET SESSION (LiveKit)</b>
-            <br><br>
-            <div id="meet-status" style="font-size:11px;">NOT CONFIGURED</div>
-            <br>
-            <button id="meet-open-btn" onclick="openMeetWindow()">MEET CONNECT</button>
-        </div>
-
         <div class="toolbar">
             Sort by:
             <a href="/?sort=alpha">[A-Z]</a> | 
@@ -329,6 +321,14 @@
                 <span class="play-count">Played: {{ sound.count }}</span>
             </div>
             {% endfor %}
+        </div>
+
+        <div class="meet-launcher">
+            <b>MEET SESSION (LiveKit)</b>
+            <br><br>
+            <div id="meet-status" style="font-size:11px;">NOT CONFIGURED</div>
+            <br>
+            <button id="meet-open-btn" onclick="openMeetWindow()">MEET CONNECT</button>
         </div>
     </div>
 
