@@ -16,7 +16,6 @@ Flow (matches https://github.com/gymnae/meet):
 
 import threading
 import asyncio
-import array
 import os
 import json
 import urllib.request
@@ -31,6 +30,7 @@ class MeetBot:
         self.room_name = None
         self.password = None
         self.connected = False
+        self.connecting = False
         self.error = None
 
         # MEET_URL points at the Meet web app / token gateway
@@ -51,6 +51,10 @@ class MeetBot:
         self.api_key = os.getenv("LIVEKIT_API_KEY", "")
         self.api_secret = os.getenv("LIVEKIT_API_SECRET", "")
 
+        # Bot display name in the meet session: reuse the Mumble bot name
+        # unless an explicit MEET_BOT_NAME is set.
+        self.bot_name = os.getenv("MEET_BOT_NAME") or os.getenv("MUMBLE_USER", "SoundBot")
+
         self._loop = None
         self._room = None
         self._source = None
@@ -70,7 +74,7 @@ class MeetBot:
 
         payload = json.dumps({
             'roomName': clean_room,
-            'nickname': "SoundBot",
+            'nickname': self.bot_name,
             'password': self.password or "",
         }).encode()
 
@@ -95,7 +99,7 @@ class MeetBot:
 
     def connect(self, room, password=""):
         with self.lock:
-            if self.connected:
+            if self.connected or self.connecting:
                 return False, "Already connected to a session. Disconnect first."
             if not self.configured:
                 return False, ("Meet integration not configured "
@@ -109,6 +113,7 @@ class MeetBot:
             self.room_name = room
             self.password = password
             self.error = None
+            self.connecting = True
             self._stop_event.clear()
 
             self._thread = threading.Thread(target=self._run, daemon=True)
@@ -117,7 +122,7 @@ class MeetBot:
 
     def disconnect(self):
         with self.lock:
-            if not self.connected:
+            if not (self.connected or self.connecting):
                 return False, "Not connected."
             self._stop_event.set()
         if self._thread:
@@ -128,6 +133,7 @@ class MeetBot:
         return {
             'configured': self.configured,
             'connected': self.connected,
+            'connecting': self.connecting,
             'room': self.room_name,
             'error': self.error,
         }
@@ -135,7 +141,12 @@ class MeetBot:
     def feed(self, pcm):
         """Called by the mixer thread with 20ms s16le mono 48kHz chunks."""
         if self._loop and self._queue and self.connected:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, pcm)
+            q = self._queue
+            try:
+                q.get_nowait()  # drop oldest if full to keep latency low
+            except asyncio.QueueEmpty:
+                pass
+            self._loop.call_soon_threadsafe(q.put_nowait, pcm)
 
     # --- internals --------------------------------------------------------
 
@@ -158,6 +169,7 @@ class MeetBot:
         finally:
             with self.lock:
                 self.connected = False
+                self.connecting = False
                 self._room = None
                 self._source = None
                 self._queue = None
@@ -186,22 +198,28 @@ class MeetBot:
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, options)
+        print("[MEET] Audio track published.")
 
         with self.lock:
             self.connected = True
+            self.connecting = False
 
-        # consumer: publish queued audio at real-time pace
+        # consumer: publish queued audio at real-time pace.
+        # The mixer produces exactly 960 samples (20ms) per chunk.
         async def publisher():
             while not self._stop_event.is_set() and room.isconnected():
                 try:
                     pcm = await asyncio.wait_for(self._queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
-                # AudioFrame.data is a writable int16 memoryview in
-                # livekit-rtc 0.18.x; copy the s16le PCM into it
-                frame = rtc.AudioFrame.create(48000, 1, 960)
-                frame.data[:] = array.array('h', pcm[:1920])
-                await self._source.capture_frame(frame)
+                try:
+                    frame = rtc.AudioFrame.create(48000, 1, 960)
+                    # AudioFrame.data is a writable int16 memoryview in
+                    # livekit-rtc 0.18.x; copy the s16le PCM into it
+                    frame.data[:] = memoryview(pcm)[:1920]
+                    await self._source.capture_frame(frame)
+                except Exception as e:
+                    print(f"[MEET WARN] frame publish failed: {e}")
 
         publisher_task = asyncio.ensure_future(publisher())
 

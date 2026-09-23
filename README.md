@@ -89,6 +89,7 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MEET_URL |	None |	Base URL of your meet install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
 |LIVEKIT_API_KEY |	None |	LiveKit API key used to mint the SoundBot's join token.|
 |LIVEKIT_API_SECRET |	None |	LiveKit API secret used to mint the SoundBot's join token.|
+|MEET_BOT_NAME |	MUMBLE_USER |	Display name of the bot inside the meet session (defaults to MUMBLE_USER).|
 
 ## 📺 Meet / LiveKit Session Integration
 
