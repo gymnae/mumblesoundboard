@@ -27,12 +27,18 @@ class MatrixAppServiceBot:
                 "device_id": "SOUNDBOARD",
                 "appservice_token": "YOUR_AS_TOKEN",
                 "rooms": [],  # List of room IDs to join automatically
-                "livekit_url": "", 
+                "livekit_url": "",
                 "livekit_token": "" # Usually orchestrated via MatrixMSC3401
             }
-            with open(self.config_path, "w") as f:
-                yaml.dump(self.config, f)
-            logger.warning("Created default matrix_config.yaml. Please configure it.")
+            try:
+                with open(self.config_path, "w") as f:
+                    yaml.dump(self.config, f)
+                logger.warning("Created default matrix_config.yaml. Please configure it.")
+            except PermissionError:
+                logger.warning("Cannot write %s (read-only). Starting with defaults.", self.config_path)
+        except PermissionError:
+            logger.warning("Cannot read %s (permission denied). Check file ownership (uid 1000).", self.config_path)
+            raise
 
     async def push_audio_loop(self):
         """Continuously pulls PCM audio from the soundboard engine and sends it to LiveKit"""

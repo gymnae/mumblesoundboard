@@ -230,10 +230,12 @@ class MeetBot:
         if self._ice_servers:
             ice_servers = []
             for s in self._ice_servers:
+                # livekit-rtc IceServer proto field is 'password'
+                # (alias for TURN credential)
                 ice_servers.append(rtc.IceServer(
                     urls=s['urls'],
                     username=s['username'] or None,
-                    credential=s['credential'] or None,
+                    password=s['credential'] or None,
                 ))
             room_options.ice_servers = ice_servers
             print(f"[MEET] Using explicit ICE servers: {self._ice_servers[0]['urls']}")
