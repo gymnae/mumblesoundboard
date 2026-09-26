@@ -16,7 +16,7 @@ import urllib.request
 import urllib.error
 import fcntl
 from urllib.parse import urlparse, urlunparse
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 
 import pymumble_py3 as pymumble
 from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
@@ -509,16 +509,19 @@ def matrix_loop():
 
 threading.Thread(target=matrix_loop, daemon=True).start()
 
+def list_sound_files():
+    """File names of the playable sounds in SOUNDS_DIR (flat, ALLOWED_EXTENSIONS only)."""
+    valid_exts = tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
+    if not os.path.exists(SOUNDS_DIR):
+        return []
+    return [f for f in os.listdir(SOUNDS_DIR)
+            if f.endswith(valid_exts) and os.path.isfile(os.path.join(SOUNDS_DIR, f))]
+
 @app.route('/')
 def index():
     sort_type = request.args.get('sort', 'alpha')
     stats = get_stats()
-    files = []
-    valid_exts = tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
-    if os.path.exists(SOUNDS_DIR):
-        for f in os.listdir(SOUNDS_DIR):
-            if f.endswith(valid_exts):
-                files.append({ 'name': f, 'count': stats.get(f, 0) })
+    files = [{ 'name': f, 'count': stats.get(f, 0) } for f in list_sound_files()]
     if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
     else: files.sort(key=lambda x: x['name'])
     
@@ -536,6 +539,24 @@ def play(filename):
         update_stat(filename)
         return "Playing", 200
     return "File not found", 404
+
+@app.route('/api/sounds')
+def api_sounds():
+    """The sound library as JSON, e.g. for the meet sound board."""
+    sounds = []
+    for f in sorted(list_sound_files()):
+        try:
+            sounds.append({ 'name': f, 'size': os.path.getsize(os.path.join(SOUNDS_DIR, f)) })
+        except OSError:
+            pass
+    return jsonify({ 'sounds': sounds })
+
+@app.route('/sounds/<path:filename>')
+def sound_file(filename):
+    """Downloads a sound file from the library. Does not play it anywhere."""
+    if filename not in list_sound_files():
+        return "File not found", 404
+    return send_from_directory(SOUNDS_DIR, filename)
 
 @app.route('/play_url')
 def play_external_url():

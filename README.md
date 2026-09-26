@@ -116,6 +116,15 @@ HTTP API:
 - `GET /meet/disconnect` — leave the current session
 - `GET /meet/status` — JSON connection status
 
+### Sound library for meet's in-room sound board
+
+meet has its own sound board inside each room: a click is sent to everyone in the room and every browser plays the file itself, so no bot is needed. meet can use this soundboard's library for it by setting `SOUNDBOARD_URL` to the soundboard's address. Two read-only endpoints serve the library:
+
+- `GET /api/sounds` — the playable files as JSON: `{"sounds": [{"name": "horn.mp3", "size": 48213}, ...]}`
+- `GET /sounds/<filename>` — downloads one file from the list. It does not play anything.
+
+Only files that appear in the list (the `sounds/` folder, filtered by `ALLOWED_EXTENSIONS`) can be downloaded.
+
 ## � Matrix & LiveKit Integration (MatrixRTC)
 
 The unit features a dual-stack output, meaning it can stream audio to a Mumble server and a Matrix room simultaneously! Matrix integration operates via a local AppService bot that pushes WebRTC audio directly to your LiveKit SFU.
