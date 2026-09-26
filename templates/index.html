@@ -204,85 +204,43 @@
             width: 200px;
         }
 
-        /* --- MEET CONNECTION OVERLAY WINDOW --- */
-        .meet-launcher {
+        /* --- MEET BOTS: invite SoundBot and DJ into a meet room --- */
+        .meet-panel {
             border: 2px solid #00FF00;
             background: #004080;
             padding: 10px;
-            text-align: center;
             margin-bottom: 20px;
+            text-align: center;
         }
-
-        .overlay-backdrop {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            z-index: 2000;
-            align-items: flex-end;
+        .meet-panel .input-retro { width: 260px; max-width: 100%; box-sizing: border-box; margin: 8px 4px 0; }
+        .meet-bots {
+            display: flex;
+            flex-wrap: wrap;
             justify-content: center;
-            pointer-events: none; /* let the page below stay clickable */
+            gap: 10px;
+            margin-top: 10px;
         }
-        .overlay-backdrop.open { display: flex; }
-
-        .meet-window {
+        .meet-bot {
             background: #C0C0C0;
             border-top: 2px solid #FFFFFF;
             border-left: 2px solid #FFFFFF;
             border-right: 2px solid #000000;
             border-bottom: 2px solid #000000;
-            width: 320px;
-            max-width: 90%;
-            box-shadow: 5px 5px 0 #000;
             color: #000;
-            pointer-events: auto;
-            /* dock the window at the bottom, above the fixed control deck */
-            margin-bottom: 120px;
-        }
-
-        .meet-titlebar {
-            background: #000080;
-            color: #FFFFFF;
-            font-weight: bold;
-            padding: 4px 8px;
+            padding: 8px;
+            width: 220px;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: default;
+            flex-direction: column;
+            gap: 4px;
         }
-
-        .meet-close {
-            background: #C0C0C0;
-            color: #000;
-            border: 2px outset #FFF;
-            font-family: monospace;
-            font-weight: bold;
-            cursor: pointer;
-            padding: 0 6px;
-        }
-        .meet-close:active { border-style: inset; }
-
-        .meet-body { padding: 15px; text-align: center; }
-
-        .meet-body label {
-            display: block;
-            text-align: left;
-            font-size: 11px;
-            font-weight: bold;
-            margin: 8px 0 2px 0;
-        }
-
-        .meet-body .input-retro { width: 100%; box-sizing: border-box; }
-
-        .meet-actions { margin-top: 15px; text-align: center; }
-
-        .meet-err {
-            color: #FF0000;
-            font-size: 11px;
-            margin-top: 8px;
-            word-break: break-word;
-            display: none;
-        }
+        .meet-bot-name { font-weight: bold; }
+        .meet-bot-hint { font-size: 11px; color: #333; }
+        .meet-bot-status { font-size: 11px; font-weight: bold; min-height: 14px; word-break: break-word; }
+        .meet-bot-status.on { color: #006000; }
+        .meet-bot-status.busy { color: #806000; }
+        .meet-bot-status.err { color: #C00000; }
+        .meet-bot button { font-family: inherit; font-weight: bold; padding: 4px; cursor: pointer; }
+        .meet-note { font-size: 11px; margin-top: 8px; color: #FFFF00; min-height: 13px; }
     </style>
 </head>
 <body>
@@ -314,6 +272,28 @@
             <input type="text" id="search-box" class="search-box" placeholder="SEARCH SOUNDS..." onkeyup="filterSounds()">
         </div>
 
+        <div class="meet-panel" id="meet-panel">
+            <b>📶 MEET ROOM</b>
+            <br>
+            <input type="text" id="meet-room" class="input-retro" placeholder="Room name..." autocomplete="off" spellcheck="false" aria-label="Meet room name">
+            <input type="password" id="meet-pass" class="input-retro" placeholder="Room password..." autocomplete="off" aria-label="Meet room password" hidden>
+            <div class="meet-bots">
+                <div class="meet-bot" data-bot="sound">
+                    <div class="meet-bot-name">💿 <span class="bot-name">SoundBot</span></div>
+                    <div class="meet-bot-hint">plays the sound buttons</div>
+                    <div class="meet-bot-status">...</div>
+                    <button type="button" onclick="meetToggle('sound')">INVITE</button>
+                </div>
+                <div class="meet-bot" data-bot="dj">
+                    <div class="meet-bot-name">🎧 <span class="bot-name">DJ</span></div>
+                    <div class="meet-bot-hint">plays YouTube &amp; links</div>
+                    <div class="meet-bot-status">...</div>
+                    <button type="button" onclick="meetToggle('dj')">INVITE</button>
+                </div>
+            </div>
+            <div id="meet-note" class="meet-note"></div>
+        </div>
+
         <div class="sound-grid">
             {% for sound in files %}
             <div class="sound-btn" onclick="playSound('{{ sound.name }}')">
@@ -321,14 +301,6 @@
                 <span class="play-count">Played: {{ sound.count }}</span>
             </div>
             {% endfor %}
-        </div>
-
-        <div class="meet-launcher">
-            <b>MEET SESSION (LiveKit)</b>
-            <br><br>
-            <div id="meet-status" style="font-size:11px;">NOT CONFIGURED</div>
-            <br>
-            <button id="meet-open-btn" onclick="openMeetWindow()">MEET CONNECT</button>
         </div>
     </div>
 
@@ -350,36 +322,6 @@
         </div>
 
         <button class="stop-btn" onclick="stopAll()">■ STOP ALL</button>
-    </div>
- 
-    <!-- MEET SESSION CONNECTION OVERLAY WINDOW -->
-    <div id="meet-overlay" class="overlay-backdrop">
-        <div class="meet-window">
-            <div class="meet-titlebar">
-                <span>📶 MEET SESSION</span>
-                <button class="meet-close" onclick="closeMeetWindow()">X</button>
-            </div>
-            <div class="meet-body">
-                <!-- disconnected view: enter room + password -->
-                <div id="meet-connect-form">
-                    <label>ROOM NAME:</label>
-                    <input type="text" id="meet-room" class="input-retro" placeholder="Room name...">
-                    <label>PASSWORD (OPTIONAL):</label>
-                    <input type="password" id="meet-pass" class="input-retro" placeholder="Password...">
-                    <div class="meet-actions">
-                        <button id="meet-connect-btn" onclick="meetConnect()">CONNECT</button>
-                    </div>
-                </div>
-                <!-- connected view: only offer disconnect, never reveal room name -->
-                <div id="meet-connected-form" style="display:none;">
-                    <p style="font-weight:bold; color:#008000;">🟢 BOT IS CONNECTED TO A MEET SESSION</p>
-                    <div class="meet-actions">
-                        <button id="meet-disconnect-btn" onclick="meetDisconnect()">DISCONNECT</button>
-                    </div>
-                </div>
-                <div id="meet-error" class="meet-err"></div>
-            </div>
-        </div>
     </div>
 
     <script>
@@ -458,96 +400,92 @@
             }
         }
 
-       let meetConnected = false;
+       // --- MEET BOTS -------------------------------------------------------
+       // The room name is never shown once a bot is in a room.
+       const MEET_BOTS = ['sound', 'dj'];
+       let meetState = {};
+       const meetPending = {};
+
+       function meetNote(text) {
+           document.getElementById('meet-note').innerText = text || '';
+       }
+
+       function showMeetPassword() {
+           const pass = document.getElementById('meet-pass');
+           if (pass.hidden) {
+               pass.hidden = false;
+               pass.focus();
+           }
+       }
 
        function updateMeetStatus(meet) {
            if (!meet) return;
-           const statusEl = document.getElementById('meet-status');
-           const openBtn = document.getElementById('meet-open-btn');
-           meetConnected = meet.connected;
+           meetState = meet;
+           const configured = MEET_BOTS.some(key => meet[key] && meet[key].configured);
+           document.getElementById('meet-room').disabled = !configured;
+           if (!configured) meetNote('NOT CONFIGURED (MEET_URL MISSING)');
 
-           const connectForm = document.getElementById('meet-connect-form');
-           const connectedForm = document.getElementById('meet-connected-form');
-           const errEl = document.getElementById('meet-error');
-           const cBtn = document.getElementById('meet-connect-btn');
+           MEET_BOTS.forEach(key => {
+               const bot = meet[key];
+               if (!bot) return;
+               const card = document.querySelector(`.meet-bot[data-bot="${key}"]`);
+               const status = card.querySelector('.meet-bot-status');
+               const btn = card.querySelector('button');
+               card.querySelector('.bot-name').innerText = bot.name;
 
-           if (!meet.configured) {
-               statusEl.innerText = "NOT CONFIGURED (MEET_URL / API KEY MISSING)";
-               statusEl.style.color = "#FF0000";
-               openBtn.disabled = true;
-           } else {
-               openBtn.disabled = false;
-               if (meet.connected) {
-                   statusEl.innerText = "🟢 BOT ACTIVE IN MEET SESSION";
-                   statusEl.style.color = "#00FF00";
-               } else if (meet.connecting) {
-                   statusEl.innerText = "🟡 CONNECTING...";
-                   statusEl.style.color = "#FFFF00";
-               } else if (meet.error) {
-                   statusEl.innerText = "ERROR: " + meet.error;
-                   statusEl.style.color = "#FF0000";
+               status.className = 'meet-bot-status';
+               if (bot.connected) {
+                   status.innerText = '🟢 IN A ROOM';
+                   status.classList.add('on');
+                   btn.innerText = 'LEAVE';
+               } else if (bot.connecting) {
+                   status.innerText = '🟡 JOINING...';
+                   status.classList.add('busy');
+                   btn.innerText = 'CANCEL';
+               } else if (bot.error) {
+                   status.innerText = 'ERROR: ' + bot.error;
+                   status.classList.add('err');
+                   btn.innerText = 'INVITE';
+                   if (/password/i.test(bot.error)) showMeetPassword();
                } else {
-                   statusEl.innerText = "READY - NOT CONNECTED";
-                   statusEl.style.color = "#FFFF00";
+                   status.innerText = 'NOT IN A ROOM';
+                   btn.innerText = 'INVITE';
                }
-           }
-
-           // toggle modal views (room name is intentionally NOT shown once connected)
-           connectForm.style.display = meet.connected ? 'none' : 'block';
-           connectedForm.style.display = meet.connected ? 'block' : 'none';
-
-           if (meet.connecting) {
-               cBtn.disabled = true;
-               cBtn.innerText = "CONNECTING...";
-           } else {
-               cBtn.disabled = false;
-               cBtn.innerText = "CONNECT";
-           }
-
-           if (meet.error) {
-               errEl.innerText = meet.error;
-               errEl.style.display = 'block';
-           } else {
-               errEl.style.display = 'none';
-           }
+               btn.disabled = !bot.configured || !!meetPending[key];
+           });
        }
 
-       function openMeetWindow() {
-           document.getElementById('meet-overlay').classList.add('open');
-           // pre-focus the room field when not connected
-           if (!meetConnected) document.getElementById('meet-room').focus();
-       }
-
-       function closeMeetWindow() {
-           document.getElementById('meet-overlay').classList.remove('open');
-       }
-
-       function meetConnect() {
-           const room = document.getElementById('meet-room').value;
-           const pass = document.getElementById('meet-pass').value;
-           if (!room) { alert("Enter a room name!"); return; }
-           const btn = document.getElementById('meet-connect-btn');
-           btn.disabled = true;
-           btn.innerText = "CONNECTING...";
-           fetch('/meet/connect?room=' + encodeURIComponent(room) + '&password=' + encodeURIComponent(pass))
-               .then(r => r.text().then(t => ({ok: r.ok, text: t})))
-               .then(res => {
-                   if (!res.ok) alert(res.text);
-                   document.getElementById('meet-pass').value = '';
+       function meetToggle(key) {
+           const bot = meetState[key];
+           const leaving = bot && (bot.connected || bot.connecting);
+           const body = new URLSearchParams({ bot: key });
+           if (!leaving) {
+               const room = document.getElementById('meet-room').value.trim();
+               if (!room) {
+                   meetNote('ENTER A ROOM NAME FIRST');
+                   document.getElementById('meet-room').focus();
+                   return;
+               }
+               body.set('room', room);
+               body.set('password', document.getElementById('meet-pass').value);
+           }
+           meetNote('');
+           meetPending[key] = true;
+           updateMeetStatus(meetState);
+           fetch(leaving ? '/meet/disconnect' : '/meet/connect', { method: 'POST', body })
+               .then(r => r.text().then(text => ({ ok: r.ok, text })))
+               .then(res => { if (!res.ok) meetNote(res.text); })
+               .catch(() => meetNote('SOUNDBOARD UNREACHABLE'))
+               .finally(() => {
+                   meetPending[key] = false;
+                   checkStatus();
                });
        }
 
-       function meetDisconnect() {
-           document.getElementById('meet-disconnect-btn').disabled = true;
-           fetch('/meet/disconnect')
-               .then(() => {
-                   document.getElementById('meet-disconnect-btn').disabled = false;
-                   document.getElementById('meet-room').value = '';
-               });
-       }
-
-       document.addEventListener('keydown', e => {
-           if (e.key === 'Escape') closeMeetWindow();
+       ['meet-room', 'meet-pass'].forEach(id => {
+           document.getElementById(id).addEventListener('keydown', e => {
+               if (e.key === 'Enter') meetToggle('sound');
+           });
        });
  
          setInterval(checkStatus, 1000);

@@ -87,9 +87,8 @@ Open your browser and navigate to: http://your-server-ip:5000
 |INVIDIOUS_USER |	None |	Basic Auth Username for Invidious (if protected).|
 |INVIDIOUS_PASS |	None |	Basic Auth Password for Invidious.|
 |MEET_URL |	None |	Base URL of your meet install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
-|LIVEKIT_API_KEY |	None |	LiveKit API key used to mint the SoundBot's join token.|
-|LIVEKIT_API_SECRET |	None |	LiveKit API secret used to mint the SoundBot's join token.|
-|MEET_BOT_NAME |	MUMBLE_USER |	Display name of the bot inside the meet session (defaults to MUMBLE_USER).|
+|MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside meet.|
+|MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside meet.|
 |LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by meet.|
 |LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked.|
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
@@ -100,21 +99,24 @@ Open your browser and navigate to: http://your-server-ip:5000
 
 In addition to Mumble and Matrix, the soundboard can connect to a [meet](https://github.com/gymnae/meet) session (e.g. https://meet.wxbu.de) — a LiveKit-based WebRTC videochat. No changes to the meet installation are required.
 
-**One Meet session at a time.** Configure the LiveKit credentials via env vars and pick the room from the web UI:
+Two bots can be invited, each into one room at a time:
+
+* **SoundBot** plays the sound buttons.
+* **DJ** plays YouTube and other links.
+
+They are separate participants, so people in the room can turn the DJ's music down with meet's per-person volume and still hear the sound buttons. Only the meet address is needed:
 
 ```bash
   -e MEET_URL="https://your-meet-install" \
-  -e LIVEKIT_API_KEY="yourkey" \
-  -e LIVEKIT_API_SECRET="yoursecret" \
 ```
 
-Then in the web UI, enter the **room name** (and optional **password**, validated by the meet backend via `/api/token`) and press **CONNECT**. The bot joins as a participant named `SoundBot` and streams the soundboard's mixed audio into the session. Use **DISCONNECT** or `GET /meet/disconnect` to leave. The Mumble and Matrix integrations keep working independently and simultaneously.
+In the web UI, type the **room name** in the *Meet room* panel and press **INVITE** on the SoundBot, the DJ or both. If the room has a password, a password field appears (meet checks it via `/api/token`). **LEAVE** takes a bot out again. The room name is not shown once a bot is in a room. The Mumble and Matrix integrations keep working independently and still get everything mixed together.
 
-HTTP API:
+HTTP API (`bot` is `sound` or `dj`, default `sound`; GET or POST form fields):
 
-- `GET /meet/connect?room=<name>&password=<optional>` — connect to a session
-- `GET /meet/disconnect` — leave the current session
-- `GET /meet/status` — JSON connection status
+- `/meet/connect?bot=<sound|dj>&room=<name>&password=<optional>` — invite a bot into a room
+- `/meet/disconnect?bot=<sound|dj>` — let a bot leave its room
+- `GET /meet/status` — JSON status of both bots: `{"sound": {...}, "dj": {...}}`
 
 ## � Matrix & LiveKit Integration (MatrixRTC)
 
