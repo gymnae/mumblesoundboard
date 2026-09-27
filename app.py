@@ -351,17 +351,24 @@ class AudioEngine:
         self.volume_remote = max(0.0, min(1.0, float(vol) / 100.0))
 
     def get_chunk(self):
-        CHUNK_SIZE = 960 * 2 
-        mixed_audio = [0] * 960
-        
+        """Next 20ms of everything that plays (sound buttons and web streams), mixed."""
+        return mix_pcm(*self.get_chunks())
+
+    def get_chunks(self):
+        """Next 20ms as two separate mixes: (sound buttons, web streams).
+        Each is 1920 bytes of s16le mono 48kHz, or None when nothing of that kind plays."""
+        CHUNK_SIZE = 960 * 2
+        mixed = {'local': [0] * 960, 'remote': [0] * 960}
+        heard = set()
+
         with self.lock:
             if not self.active_processes:
                 self.current_metadata = None
-                return None
+                return None, None
             current_procs = list(self.active_processes)
 
         active_now = []
-        
+
         for p in current_procs:
             # Initialize a persistent buffer for this process
             if not hasattr(p, '_buffer'):
@@ -386,11 +393,14 @@ class AudioEngine:
                     p._buffer = p._buffer[CHUNK_SIZE:] # Keep remainder
                     
                     samples = struct.unpack(f"<{len(raw_chunk)//2}h", raw_chunk)
-                    current_vol = self.volume_local if getattr(p, 'source_type', 'local') == 'local' else self.volume_remote
-                    
+                    kind = 'local' if getattr(p, 'source_type', 'local') == 'local' else 'remote'
+                    current_vol = self.volume_local if kind == 'local' else self.volume_remote
+                    target = mixed[kind]
+                    heard.add(kind)
+
                     for i, sample in enumerate(samples):
-                        mixed_audio[i] += int(sample * current_vol)
-                        
+                        target[i] += int(sample * current_vol)
+
                     active_now.append(p)
                 else:
                     # Not enough data yet. Check if it died or is just buffering.
@@ -409,25 +419,38 @@ class AudioEngine:
             self.active_processes = [p for p in self.active_processes if p in active_now]
 
         if not active_now:
-            return None
+            return None, None
 
-        final_bytes = bytearray()
-        for sample in mixed_audio:
-            val = max(-32768, min(32767, sample))
-            final_bytes += struct.pack("<h", val)
-            
-        return bytes(final_bytes)
+        return tuple(pack_pcm(mixed[kind]) if kind in heard else None for kind in ('local', 'remote'))
+
+def pack_pcm(samples):
+    """Clips mixed samples to 16 bit and packs them as s16le."""
+    return struct.pack(f"<{len(samples)}h", *(max(-32768, min(32767, s)) for s in samples))
+
+def mix_pcm(*chunks):
+    """Mixes s16le chunks of equal length; None entries are skipped. Returns None if all are None."""
+    present = [c for c in chunks if c]
+    if len(present) <= 1:
+        return present[0] if present else None
+    unpacked = [struct.unpack(f"<{len(c)//2}h", c) for c in present]
+    return pack_pcm([sum(s) for s in zip(*unpacked)])
 
 audio_engine = AudioEngine()
 
-# --- MEET (LiveKit) BOT ---
+# --- MEET (LiveKit) BOTS ---
+# Two independent participants, each invited to one room from the web UI:
+# SoundBot plays the sound buttons, DJ plays YouTube and other links. Listeners can
+# turn the DJ down in meet (per-person volume) and still hear the sound buttons.
 from meet_bot import MeetBot
-meet_bot = MeetBot(audio_engine)
+meet_bots = {
+    'sound': MeetBot(audio_engine, os.getenv("MEET_BOT_NAME") or USER, label="SOUNDBOT"),
+    'dj': MeetBot(audio_engine, os.getenv("MEET_DJ_NAME") or "DJ", label="DJ"),
+}
 
 # --- CENTRAL MIXER ---
-# A single mixer thread pulls the mixed PCM from the audio engine at
-# real-time pace (20ms chunks) and fans it out to all registered outputs
-# (Mumble and/or Meet/LiveKit).
+# A single mixer thread pulls PCM from the audio engine at real-time pace
+# (20ms chunks) and fans it out: sound buttons to the SoundBot, web streams to
+# the DJ, and both mixed to Mumble.
 import queue
 
 mumble_queue = queue.Queue(maxsize=100)
@@ -435,10 +458,14 @@ mumble_queue = queue.Queue(maxsize=100)
 def mixer_loop():
     next_tick = time.time()
     while True:
-        pcm_chunk = audio_engine.get_chunk()
+        sound_chunk, stream_chunk = audio_engine.get_chunks()
+        # feed Meet (non-blocking; drops chunk if consumer is behind)
+        if sound_chunk:
+            meet_bots['sound'].feed(sound_chunk)
+        if stream_chunk:
+            meet_bots['dj'].feed(stream_chunk)
+        pcm_chunk = mix_pcm(sound_chunk, stream_chunk)
         if pcm_chunk:
-            # feed Meet (non-blocking; drops chunk if consumer is behind)
-            meet_bot.feed(pcm_chunk)
             # feed Mumble (drop oldest chunk if consumer is behind)
             try:
                 mumble_queue.put_nowait(pcm_chunk)
@@ -574,26 +601,40 @@ def get_status():
     return jsonify({
         'playing': is_playing,
         'meta': audio_engine.current_metadata if is_playing else None,
-        'meet': meet_bot.status()
+        'meet': meet_status_all()
     })
+
+def meet_status_all():
+    return {key: bot.status() for key, bot in meet_bots.items()}
+
+def selected_meet_bot():
+    """The bot named by ?bot=sound|dj (default: sound), or None if unknown."""
+    key = request.args.get('bot') or request.form.get('bot') or 'sound'
+    return meet_bots.get(key)
 
 @app.route('/meet/connect', methods=['GET', 'POST'])
 def meet_connect():
+    bot = selected_meet_bot()
+    if not bot:
+        return "Unknown bot (use bot=sound or bot=dj)", 400
     room = request.args.get('room') or request.form.get('room', '')
     password = request.args.get('password') or request.form.get('password', '')
-    if not room:
+    if not room.strip():
         return "No room given", 400
-    ok, msg = meet_bot.connect(room.strip(), password)
+    ok, msg = bot.connect(room.strip(), password)
     return ("Meet connect: " + msg, 200) if ok else (msg, 409)
 
-@app.route('/meet/disconnect')
+@app.route('/meet/disconnect', methods=['GET', 'POST'])
 def meet_disconnect():
-    ok, msg = meet_bot.disconnect()
+    bot = selected_meet_bot()
+    if not bot:
+        return "Unknown bot (use bot=sound or bot=dj)", 400
+    ok, msg = bot.disconnect()
     return ("Meet disconnect: " + msg, 200) if ok else (msg, 409)
 
 @app.route('/meet/status')
 def meet_status():
-    return jsonify(meet_bot.status())
+    return jsonify(meet_status_all())
 
 @app.route('/stats')
 def view_stats():
