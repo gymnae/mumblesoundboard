@@ -10,7 +10,7 @@ A turnkey, lightweight, and secure Dockerized soundboard solution that connects 
 ## ✨ Features
 
 * **Retro 90s Design:** Web-safe colors, sticky control decks, marquees, and "Under Construction" GIFs.
-* **High-Quality Audio:** Streams at **96kbps** (Music Quality) to Mumble and to Matrix using LiveKit MatrixRTC, powered by a jitter-free threading engine.
+* **High-Quality Audio:** Sends 48 kHz mono PCM to Mumble with a configurable **128 kbit/s** Opus target (subject to the Murmur server limit), peak-protected mixing, and runtime reliability metrics.
 * **Universal Playback:**
     * **Local Files:** Plays `.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac` from a mounted folder.
     * **YouTube Proxying:** The system is designed to **never contact YouTube directly**. It utilizes an [Invidious](https://invidious.io/) instance (e.g., `tube.wxbu.de`) to resolve streams via API, ensuring your server IP remains hidden from Google and bypassing "Sign in to confirm you're not a bot" blocks.
@@ -83,6 +83,8 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MUMBLE_USER |	SoundBot |	Username the bot will use.|
 |MUMBLE_PASSWORD |	None |	Password (if server requires it).|
 |MUMBLE_CHANNEL |	None |	Channel to join automatically (Case Sensitive).|
+|MUMBLE_BITRATE |	128000 |	Requested Opus bandwidth in bit/s (clamped to 32000–256000 and possibly reduced by Murmur).|
+|AUDIO_METRICS_INTERVAL |	30 |	Seconds between audio reliability metric log lines (minimum 5).|
 |INVIDIOUS_HOST |	None | 	Base URL of Invidious instance (e.g. https://tube.wxbu.de).|
 |INVIDIOUS_USER |	None |	Basic Auth Username for Invidious (if protected).|
 |INVIDIOUS_PASS |	None |	Basic Auth Password for Invidious.|
@@ -94,6 +96,44 @@ Open your browser and navigate to: http://your-server-ip:5000
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
 |LIVEKIT_ICE_CREDENTIAL |	None |	TURN password.|
 |LIVEKIT_ICE_SECRET |	None |	TURN static auth secret (coturn `use-static-auth`). The bot generates ephemeral credentials automatically.|
+
+## Audio quality and reliability diagnostics
+
+The application decodes every source once to 48 kHz, mono, signed 16-bit PCM. Mumble then
+encodes this PCM to Opus, so some loss is unavoidable. Remote sources such as YouTube are often
+already AAC or Opus; sending those through Mumble is a lossy-to-lossy transcode. The configured
+bitrate cannot exceed Murmur's `bandwidth` ceiling. A requested 128 kbit/s is a safe mono-music
+default; 96 kbit/s remains reasonable for mixed speech and music, while 64 kbit/s and below can
+produce obvious music artifacts. Increasing beyond 128 kbit/s generally has diminishing returns.
+
+Use the offline diagnostic before blaming the network or Opus:
+
+```bash
+# Known -12 dBFS reference tone (no input file required)
+python audio_quality.py --seconds 5
+
+# Decode and inspect the first 30 seconds exactly as the application does
+python audio_quality.py sounds/example.wav --seconds 30
+```
+
+The report includes peak and RMS levels, clipping, duration, complete 20 ms frames, partial-frame
+bytes, and the 768 kbit/s internal PCM rate. A nonzero `partial_frame_bytes` value means the input
+ended between frames; persistent clipping indicates an over-loud source. The central mixer applies
+one common gain only when a multi-source sum would exceed int16, avoiding hard-clipping while
+preserving source balance. Single-source PCM remains bit-exact after its selected volume gain.
+
+Runtime diagnostics are printed as `[AUDIO METRICS]` and are also returned under `audio` by
+`GET /status`:
+
+- `queue_drops`: Mumble could not consume audio in time; old frames were dropped to cap latency.
+- `deadline_misses`: decoding/mixing exceeded the explicit 20 ms frame deadline.
+- `mumble_underruns`: no audio frame was available while connected (normal while idle).
+- `peak_queue_depth`: high values indicate encoder or network back-pressure.
+
+For troubleshooting, first test a lossless WAV at default volume. If WAV is clean but a remote
+stream is not, the upstream lossy source/transcode is the likely downgrade. If queue drops or
+deadline misses rise, investigate CPU scheduling, blocked I/O, or connectivity rather than bitrate.
+The connection log shows both the requested Opus bandwidth and the server-advertised ceiling.
 
 ## 📺 Meet / LiveKit Session Integration
 

@@ -19,7 +19,16 @@ from urllib.parse import urlparse, urlunparse
 from flask import Flask, render_template, request, jsonify
 
 import pymumble_py3 as pymumble
-from pymumble_py3.constants import PYMUMBLE_AUDIO_PER_PACKET
+
+from audio_quality import (
+    BYTES_PER_FRAME,
+    FRAME_DURATION_SECONDS,
+    SAMPLES_PER_FRAME,
+    enqueue_latest,
+    mix_pcm,
+    pack_pcm,
+    unpack_pcm,
+)
 
 def make_non_blocking(fd):
     """Sets a file descriptor to non-blocking mode."""
@@ -37,7 +46,11 @@ HOST = os.getenv("MUMBLE_HOST", "localhost")
 PORT = int(os.getenv("MUMBLE_PORT", 64738))
 USER = os.getenv("MUMBLE_USER", "SoundBot")
 PASSWORD = os.getenv("MUMBLE_PASSWORD", "")
-CHANNEL = os.getenv("MUMBLE_CHANNEL", "") 
+CHANNEL = os.getenv("MUMBLE_CHANNEL", "")
+# 128 kbit/s is a transparent-ish mono music target. Murmur may negotiate it
+# downward when its server-wide maximum bandwidth is lower.
+MUMBLE_BITRATE = max(32_000, min(256_000, int(os.getenv("MUMBLE_BITRATE", "128000"))))
+AUDIO_METRICS_INTERVAL = max(5.0, float(os.getenv("AUDIO_METRICS_INTERVAL", "30")))
 
 # --- INVIDIOUS CONFIGURATION ---
 INVIDIOUS_HOST = os.getenv("INVIDIOUS_HOST", "")
@@ -138,14 +151,15 @@ def resolve_video_data(url):
                 data = json.loads(response.read().decode())
                 title = data.get('title', title)
                 
-                # 4. Extract raw stream URL from adaptiveFormats (itag 140 = 128kbps m4a)
+                # Choose the highest-bitrate audio-only source exposed by the
+                # configured proxy. Preferring a fixed 128 kbit/s AAC stream here
+                # caused avoidable loss before Mumble's second (Opus) encode.
                 formats = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
-                target_format = next((f for f in formats if f.get('itag') == '140'), None)
-                
-                if not target_format and formats:
-                    # Fallback to the highest bitrate audio if 140 isn't explicitly found
-                    formats.sort(key=lambda x: int(x.get('bitrate', 0)), reverse=True)
-                    target_format = formats[0]
+                target_format = max(
+                    formats,
+                    key=lambda item: int(item.get('bitrate') or 0),
+                    default=None,
+                )
                     
                 if not target_format or 'url' not in target_format:
                     print("[API FAIL] No audio streams found in API response.")
@@ -357,8 +371,8 @@ class AudioEngine:
     def get_chunks(self):
         """Next 20ms as two separate mixes: (sound buttons, web streams).
         Each is 1920 bytes of s16le mono 48kHz, or None when nothing of that kind plays."""
-        CHUNK_SIZE = 960 * 2
-        mixed = {'local': [0] * 960, 'remote': [0] * 960}
+        CHUNK_SIZE = BYTES_PER_FRAME
+        mixed = {'local': [0] * SAMPLES_PER_FRAME, 'remote': [0] * SAMPLES_PER_FRAME}
         heard = set()
 
         with self.lock:
@@ -392,7 +406,7 @@ class AudioEngine:
                     raw_chunk = bytes(p._buffer[:CHUNK_SIZE])
                     p._buffer = p._buffer[CHUNK_SIZE:] # Keep remainder
                     
-                    samples = struct.unpack(f"<{len(raw_chunk)//2}h", raw_chunk)
+                    samples = unpack_pcm(raw_chunk)
                     kind = 'local' if getattr(p, 'source_type', 'local') == 'local' else 'remote'
                     current_vol = self.volume_local if kind == 'local' else self.volume_remote
                     target = mixed[kind]
@@ -423,18 +437,6 @@ class AudioEngine:
 
         return tuple(pack_pcm(mixed[kind]) if kind in heard else None for kind in ('local', 'remote'))
 
-def pack_pcm(samples):
-    """Clips mixed samples to 16 bit and packs them as s16le."""
-    return struct.pack(f"<{len(samples)}h", *(max(-32768, min(32767, s)) for s in samples))
-
-def mix_pcm(*chunks):
-    """Mixes s16le chunks of equal length; None entries are skipped. Returns None if all are None."""
-    present = [c for c in chunks if c]
-    if len(present) <= 1:
-        return present[0] if present else None
-    unpacked = [struct.unpack(f"<{len(c)//2}h", c) for c in present]
-    return pack_pcm([sum(s) for s in zip(*unpacked)])
-
 audio_engine = AudioEngine()
 
 # --- MEET (LiveKit) BOTS ---
@@ -453,10 +455,25 @@ meet_bots = {
 # the DJ, and both mixed to Mumble.
 import queue
 
-mumble_queue = queue.Queue(maxsize=100)
+# Keep at most 500 ms queued. Older audio is discarded instead of allowing
+# latency to grow without bound when encoding or networking stalls.
+mumble_queue = queue.Queue(maxsize=25)
+audio_metrics = {
+    'frames_produced': 0,
+    'queue_drops': 0,
+    'deadline_misses': 0,
+    'mumble_underruns': 0,
+    'peak_queue_depth': 0,
+}
+metrics_lock = threading.Lock()
+
+def _increment_metric(name, amount=1):
+    with metrics_lock:
+        audio_metrics[name] += amount
 
 def mixer_loop():
-    next_tick = time.time()
+    next_tick = time.monotonic()
+    next_report = next_tick + AUDIO_METRICS_INTERVAL
     while True:
         sound_chunk, stream_chunk = audio_engine.get_chunks()
         # feed Meet (non-blocking; drops chunk if consumer is behind)
@@ -466,18 +483,28 @@ def mixer_loop():
             meet_bots['dj'].feed(stream_chunk)
         pcm_chunk = mix_pcm(sound_chunk, stream_chunk)
         if pcm_chunk:
+            _increment_metric('frames_produced')
             # feed Mumble (drop oldest chunk if consumer is behind)
-            try:
-                mumble_queue.put_nowait(pcm_chunk)
-            except queue.Full:
-                try: mumble_queue.get_nowait()
-                except queue.Empty: pass
-                try: mumble_queue.put_nowait(pcm_chunk)
-                except queue.Full: pass
-        next_tick += PYMUMBLE_AUDIO_PER_PACKET
-        sleep_time = next_tick - time.time()
-        if sleep_time > 0: time.sleep(sleep_time)
-        else: next_tick = time.time()
+            if enqueue_latest(mumble_queue, pcm_chunk):
+                _increment_metric('queue_drops')
+            with metrics_lock:
+                audio_metrics['peak_queue_depth'] = max(
+                    audio_metrics['peak_queue_depth'], mumble_queue.qsize()
+                )
+        next_tick += FRAME_DURATION_SECONDS
+        now = time.monotonic()
+        sleep_time = next_tick - now
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        else:
+            _increment_metric('deadline_misses')
+            # Never burst old frames in an attempt to catch up.
+            next_tick = now
+        if now >= next_report:
+            with metrics_lock:
+                snapshot = dict(audio_metrics)
+            print(f"[AUDIO METRICS] {snapshot}; queue_depth={mumble_queue.qsize()}")
+            next_report = now + AUDIO_METRICS_INTERVAL
 
 threading.Thread(target=mixer_loop, daemon=True).start()
 
@@ -486,14 +513,19 @@ def mumble_loop():
         try:
             print(f"[MUMBLE] Connecting to {HOST}:{PORT} as {USER}...")
             mumble = pymumble.Mumble(HOST, USER, password=PASSWORD, port=PORT)
-            mumble.server_max_bandwidth = None
             mumble.start()
             mumble.is_ready()
             print("[MUMBLE] Connected.")
 
             try:
-                mumble.set_bandwidth(96000)
-            except: pass
+                mumble.set_bandwidth(MUMBLE_BITRATE)
+                server_limit = getattr(mumble, 'server_max_bandwidth', None)
+                effective = min(MUMBLE_BITRATE, server_limit) if server_limit else MUMBLE_BITRATE
+                print(f"[MUMBLE] Requested Opus bandwidth: {MUMBLE_BITRATE} bit/s; "
+                      f"server limit: {server_limit if server_limit else 'not advertised'}; "
+                      f"effective target: {effective} bit/s")
+            except Exception as e:
+                print(f"[MUMBLE WARNING] Could not set requested bandwidth: {e}")
 
             if CHANNEL:
                 print(f"[MUMBLE] Attempting to join channel: {CHANNEL}")
@@ -508,9 +540,10 @@ def mumble_loop():
 
             while mumble.is_alive():
                 try:
-                    pcm_chunk = mumble_queue.get(timeout=0.1)
+                    pcm_chunk = mumble_queue.get(timeout=FRAME_DURATION_SECONDS * 2)
                     mumble.sound_output.add_sound(pcm_chunk)
                 except queue.Empty:
+                    _increment_metric('mumble_underruns')
                     continue
         
         except Exception as e:
@@ -598,9 +631,13 @@ def set_volume_remote(vol):
 @app.route('/status')
 def get_status():
     is_playing = len(audio_engine.active_processes) > 0
+    with metrics_lock:
+        metrics = dict(audio_metrics)
+    metrics['queue_depth'] = mumble_queue.qsize()
     return jsonify({
         'playing': is_playing,
         'meta': audio_engine.current_metadata if is_playing else None,
+        'audio': metrics,
         'meet': meet_status_all()
     })
 
