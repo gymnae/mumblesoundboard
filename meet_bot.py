@@ -253,7 +253,8 @@ class MeetBot:
                     username=s['username'] or None,
                     password=s['credential'] or None,
                 ))
-            room_options.ice_servers = ice_servers
+            # the SDK only sends rtc_config.ice_servers (RoomOptions has no such field)
+            rtc_config.ice_servers.extend(ice_servers)
             print(f"[{self.label}] Using explicit ICE servers: {self._ice_servers[0]['urls']}")
         # The SDK retries a failing connect for a while; leaving must not wait for that
         connect_task = asyncio.ensure_future(room.connect(server_url, token, room_options))
@@ -272,6 +273,13 @@ class MeetBot:
         except Exception as e:
             # the web UI gets a short message, the log keeps the details
             print(f"[{self.label} ERROR] LiveKit connection to {server_url} failed: {e}")
+            if 'wait_pc_connection' in str(e):
+                # signalling worked, but no ICE candidate of the server was reachable
+                print(f"[{self.label} HINT] The signal connection worked, but the media path (UDP ports / ICE-TCP) "
+                      "to LiveKit did not. If the soundboard runs on the same server or network as LiveKit, "
+                      "set 'rtc.advertise_internal_ip: true' in livekit.yaml. See README: "
+                      "'Troubleshooting: wait_pc_connection timed out'.")
+                raise RuntimeError("Signal OK, but no media path to meet's server (see soundboard log)") from None
             raise RuntimeError("Couldn't connect to meet's media server (details in the soundboard log)") from None
         print(f"[{self.label}] Connected (media path established).")
 

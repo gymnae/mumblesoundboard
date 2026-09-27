@@ -90,7 +90,7 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside meet.|
 |MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside meet.|
 |LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by meet.|
-|LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked.|
+|LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked. They replace the TURN servers LiveKit would hand out itself.|
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
 |LIVEKIT_ICE_CREDENTIAL |	None |	TURN password.|
 |LIVEKIT_ICE_SECRET |	None |	TURN static auth secret (coturn `use-static-auth`). The bot generates ephemeral credentials automatically.|
@@ -117,6 +117,33 @@ HTTP API (`bot` is `sound` or `dj`, default `sound`; GET or POST form fields):
 - `/meet/connect?bot=<sound|dj>&room=<name>&password=<optional>` — invite a bot into a room
 - `/meet/disconnect?bot=<sound|dj>` — let a bot leave its room
 - `GET /meet/status` — JSON status of both bots: `{"sound": {...}, "dj": {...}}`
+
+### Troubleshooting: `wait_pc_connection timed out`
+
+The bot reached LiveKit's signalling (WebSocket), but none of the media addresses LiveKit offered (UDP ports, ICE/TCP 7881) was reachable. This is typical when the soundboard runs on the same server or network as LiveKit: LiveKit advertises only its public IP, and the bot's packets to that IP have to come back in through a NAT or a forwarding gateway, which often fails. Browsers on the internet are not affected.
+
+**Fix (LiveKit ≥ 1.13.6):** let LiveKit also advertise its internal addresses. Add one line to `livekit.yaml` and leave the rest as it is:
+
+```yaml
+rtc:
+  # keep your node_ip / use_external_ip, port range and tcp_port as they are
+  advertise_internal_ip: true
+```
+
+Check that no `rtc.interfaces.includes`, `rtc.ips.includes` or `external_ip_only: true` hides the internal addresses, then restart LiveKit (after the soundboard's Docker network exists). The LiveKit start log should show `"advertiseInternalIP": true`.
+
+Then make sure the bot can reach those internal addresses:
+
+- **LiveKit with `network_mode: host`:** LiveKit now also offers the host's LAN, WireGuard and Docker bridge addresses. The bot's packets arrive on the Docker bridge, so a host firewall must allow them, e.g. `ufw allow in on <bridge> to any port 50000:60000 proto udp` and `ufw allow in on <bridge> to any port 7881 proto tcp`. Alternatively run the soundboard with `network_mode: host` as well.
+- **LiveKit in a bridge network with port mappings:** attach the soundboard to LiveKit's Docker network. LiveKit then also offers its container IP, which the bot reaches directly. Optionally keep signalling internal too with `LIVEKIT_FORCE_URL=ws://livekit:7880` (the service name).
+
+Quick check from inside the soundboard container (use `livekit` or the host's address):
+
+```bash
+docker exec <soundboard> python3 -c "import socket; socket.create_connection(('livekit', 7881), 3); print('ICE/TCP reachable')"
+```
+
+A working invite logs `Connected (media path established).` and `Audio track published.`
 
 ## � Matrix & LiveKit Integration (MatrixRTC)
 
