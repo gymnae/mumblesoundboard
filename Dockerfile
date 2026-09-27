@@ -27,18 +27,18 @@ RUN mkdir -p /app/data /app/sounds && \
 
 # 4. Environment Variables
 # pymumble's generated code (protoc <3.19) needs the pure-Python protobuf
-# implementation when running under protobuf 4.x
+# implementation when running under the modern protobuf required by LiveKit.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
-# 5. Install Dependencies (now includes gunicorn)
+# 5. Install resolver-compatible dependencies first. pymumble and opuslib have
+# obsolete protobuf pins, so install them without dependency metadata afterward.
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt && \
     pip install --no-deps pymumble==1.6.1 opuslib==3.0.1 && \
-    pip install --upgrade "protobuf>=4.21,<5" && \
-    python -c "from google.protobuf.internal import builder; import opuslib, pymumble_py3, nio, livekit, livekit.api; print('deps OK')"
+    python -c "import importlib.metadata as m; from google.protobuf.internal import builder; import opuslib, pymumble_py3, nio, livekit, livekit.api; assert m.version('livekit') == '1.1.20'; assert int(m.version('protobuf').split('.')[0]) >= 5; print('deps OK')"
 
 # 6. Copy App Code
 COPY . .

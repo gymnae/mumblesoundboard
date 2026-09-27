@@ -1,19 +1,19 @@
 Flask==3.0.0
-pymumble==1.6.1
+# pymumble is installed with --no-deps in the Dockerfile because its obsolete
+# protobuf==3.12.2 metadata conflicts with LiveKit. Keep it out of this resolver pass.
 yt-dlp
 ffmpeg-python==0.2.0
 gunicorn
 
 # Matrix Bot and WebRTC Audio (MatrixRTC via LiveKit)
 matrix-nio[e2e]
-# Keep the tested major line: MeetBot relies on the 1.x AudioFrame/Room API.
-livekit>=1.1.0,<2
-livekit-api>=1.1.0,<2
+# Exact versions avoid resolver backtracking and make AudioFrame API changes explicit.
+livekit==1.1.20
+livekit-api==1.1.0
 PyYAML
 
-# NOTE: pymumble/opuslib hard-pin protobuf==3.12.2, but livekit-protocol
-# needs protobuf >=4.21 (google.protobuf.internal.builder). The conflict is
-# resolved in the Dockerfile: pymumble/opuslib are installed with --no-deps
-# and protobuf is force-upgraded to 4.x afterwards.
+# NOTE: pymumble/opuslib hard-pin protobuf==3.12.2 in their metadata, while
+# current LiveKit requires protobuf >=5. The Dockerfile installs the legacy
+# Mumble packages with --no-deps after this compatible dependency set.
 six
 cffi
