@@ -145,6 +145,18 @@ docker exec <soundboard> python3 -c "import socket; socket.create_connection(('l
 
 A working invite logs `Connected (media path established).` and `Audio track published.`
 
+### Troubleshooting: bot joins but Meet audio is silent
+
+If the bot joins and publishes its track but every playback logs
+`frame publish failed: memoryview assignment: lvalue and rvalue have different structures`,
+the installed application is using the old PCM copy code with a newer LiveKit SDK. Rebuild the
+soundboard image from the current source. The frame copy now treats LiveKit's typed `int16`
+memoryview as bytes and validates that each 20 ms frame contains exactly 1920 bytes.
+
+After rebuilding, invite the **SoundBot** and play a local sound, then invite the **DJ** and play a
+web stream. The log should contain the connection and track-publication messages for each bot and
+no `frame publish failed` warnings while audio is playing.
+
 ## � Matrix & LiveKit Integration (MatrixRTC)
 
 The unit features a dual-stack output, meaning it can stream audio to a Mumble server and a Matrix room simultaneously! Matrix integration operates via a local AppService bot that pushes WebRTC audio directly to your LiveKit SFU.

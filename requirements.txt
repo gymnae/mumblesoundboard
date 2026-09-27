@@ -6,8 +6,9 @@ gunicorn
 
 # Matrix Bot and WebRTC Audio (MatrixRTC via LiveKit)
 matrix-nio[e2e]
-livekit
-livekit-api
+# Keep the tested major line: MeetBot relies on the 1.x AudioFrame/Room API.
+livekit>=1.1.0,<2
+livekit-api>=1.1.0,<2
 PyYAML
 
 # NOTE: pymumble/opuslib hard-pin protobuf==3.12.2, but livekit-protocol

@@ -26,6 +26,32 @@ import urllib.request
 import urllib.error
 
 
+AUDIO_SAMPLE_RATE = 48000
+AUDIO_CHANNELS = 1
+AUDIO_SAMPLES_PER_FRAME = 960
+AUDIO_BYTES_PER_FRAME = AUDIO_SAMPLES_PER_FRAME * 2
+
+
+def copy_pcm_to_frame(frame, pcm):
+    """Copy one s16le mixer chunk into a LiveKit frame regardless of view type."""
+    if len(pcm) != AUDIO_BYTES_PER_FRAME:
+        raise ValueError(
+            f"expected {AUDIO_BYTES_PER_FRAME} PCM bytes, got {len(pcm)}"
+        )
+
+    # Recent LiveKit releases expose AudioFrame.data as a typed int16
+    # memoryview. Cast both views to bytes so their structures match; assigning
+    # a byte-oriented source directly to the typed destination raises
+    # "lvalue and rvalue have different structures".
+    destination = frame.data.cast('B')
+    if destination.nbytes != AUDIO_BYTES_PER_FRAME:
+        raise ValueError(
+            f"LiveKit frame has {destination.nbytes} bytes, "
+            f"expected {AUDIO_BYTES_PER_FRAME}"
+        )
+    destination[:] = memoryview(pcm).cast('B')
+
+
 class MeetBot:
     def __init__(self, audio_engine, bot_name, label="MEET"):
         self.audio_engine = audio_engine
@@ -90,6 +116,7 @@ class MeetBot:
         self._queue = None
         self._stop_event = threading.Event()
         self._thread = None
+        self._last_frame_warning = 0.0
 
     @property
     def configured(self):
@@ -283,7 +310,7 @@ class MeetBot:
             raise RuntimeError("Couldn't connect to meet's media server (details in the soundboard log)") from None
         print(f"[{self.label}] Connected (media path established).")
 
-        self._source = rtc.AudioSource(48000, 1)
+        self._source = rtc.AudioSource(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS)
         track = rtc.LocalAudioTrack.create_audio_track(self.bot_name, self._source)
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
@@ -303,13 +330,20 @@ class MeetBot:
                 except asyncio.TimeoutError:
                     continue
                 try:
-                    frame = rtc.AudioFrame.create(48000, 1, 960)
-                    # AudioFrame.data is a writable int16 memoryview in
-                    # livekit-rtc 0.18.x; copy the s16le PCM into it
-                    frame.data[:] = memoryview(pcm)[:1920]
+                    frame = rtc.AudioFrame.create(
+                        AUDIO_SAMPLE_RATE,
+                        AUDIO_CHANNELS,
+                        AUDIO_SAMPLES_PER_FRAME,
+                    )
+                    copy_pcm_to_frame(frame, pcm)
                     await self._source.capture_frame(frame)
                 except Exception as e:
-                    print(f"[{self.label} WARN] frame publish failed: {e}")
+                    # A malformed source can fail every 20 ms. Keep the first
+                    # warning visible without flooding container logs.
+                    now = time.monotonic()
+                    if now - self._last_frame_warning >= 5.0:
+                        print(f"[{self.label} WARN] frame publish failed: {e}")
+                        self._last_frame_warning = now
 
         publisher_task = asyncio.ensure_future(publisher())
 
