@@ -185,16 +185,25 @@
             font-weight: bold;
         }
 
-        .stop-btn {
-            background: #FF0000;
+        .stop-btn,
+        .meet-room-btn {
             color: white;
+            font-family: inherit;
             font-weight: bold;
-            border: 3px outset #FFCCCC;
             padding: 10px 20px;
             cursor: pointer;
             height: 50px;
         }
-        .stop-btn:active { border-style: inset; }
+        .stop-btn {
+            background: #FF0000;
+            border: 3px outset #FFCCCC;
+        }
+        .meet-room-btn {
+            background: #004080;
+            border: 3px outset #80C0FF;
+        }
+        .stop-btn:active,
+        .meet-room-btn:active { border-style: inset; }
 
         .input-retro {
             border: 2px inset #000000;
@@ -205,13 +214,30 @@
         }
 
         /* --- MEET BOTS: invite SoundBot and DJ into a meet room --- */
+        .meet-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.8);
+        }
+        .meet-modal[hidden] { display: none; }
         .meet-panel {
             border: 2px solid #00FF00;
             background: #004080;
-            padding: 10px;
-            margin-bottom: 20px;
+            padding: 15px;
             text-align: center;
+            width: min(520px, 100%);
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            box-sizing: border-box;
+            box-shadow: 8px 8px 0 #000000;
         }
+        .meet-panel h2 { margin: 0; font-size: 16px; }
         .meet-panel .input-retro { width: 260px; max-width: 100%; box-sizing: border-box; margin: 8px 4px 0; }
         .meet-bots {
             display: flex;
@@ -241,6 +267,14 @@
         .meet-bot-status.err { color: #C00000; }
         .meet-bot button { font-family: inherit; font-weight: bold; padding: 4px; cursor: pointer; }
         .meet-note { font-size: 11px; margin-top: 8px; color: #FFFF00; min-height: 13px; }
+        .meet-close-btn {
+            margin-top: 12px;
+            min-width: 100px;
+            padding: 6px 14px;
+            font-family: inherit;
+            font-weight: bold;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -272,28 +306,6 @@
             <input type="text" id="search-box" class="search-box" placeholder="SEARCH SOUNDS..." onkeyup="filterSounds()">
         </div>
 
-        <div class="meet-panel" id="meet-panel">
-            <b>📶 MEET ROOM</b>
-            <br>
-            <input type="text" id="meet-room" class="input-retro" placeholder="Room name..." autocomplete="off" spellcheck="false" aria-label="Meet room name">
-            <input type="password" id="meet-pass" class="input-retro" placeholder="Room password..." autocomplete="off" aria-label="Meet room password" hidden>
-            <div class="meet-bots">
-                <div class="meet-bot" data-bot="sound">
-                    <div class="meet-bot-name">💿 <span class="bot-name">SoundBot</span></div>
-                    <div class="meet-bot-hint">plays the sound buttons</div>
-                    <div class="meet-bot-status">...</div>
-                    <button type="button" onclick="meetToggle('sound')">INVITE</button>
-                </div>
-                <div class="meet-bot" data-bot="dj">
-                    <div class="meet-bot-name">🎧 <span class="bot-name">DJ</span></div>
-                    <div class="meet-bot-hint">plays YouTube &amp; links</div>
-                    <div class="meet-bot-status">...</div>
-                    <button type="button" onclick="meetToggle('dj')">INVITE</button>
-                </div>
-            </div>
-            <div id="meet-note" class="meet-note"></div>
-        </div>
-
         <div class="sound-grid">
             {% for sound in files %}
             <div class="sound-btn" onclick="playSound('{{ sound.name }}')">
@@ -322,6 +334,31 @@
         </div>
 
         <button class="stop-btn" onclick="stopAll()">■ STOP ALL</button>
+        <button id="meet-room-open" class="meet-room-btn" type="button" onclick="openMeetModal()" aria-haspopup="dialog" aria-controls="meet-modal" aria-expanded="false">📶 MEET ROOM</button>
+    </div>
+
+    <div id="meet-modal" class="meet-modal" hidden onclick="meetBackdropClick(event)">
+        <div class="meet-panel" id="meet-panel" role="dialog" aria-modal="true" aria-labelledby="meet-modal-title">
+            <h2 id="meet-modal-title">📶 MEET ROOM</h2>
+            <input type="text" id="meet-room" class="input-retro" placeholder="Room name..." autocomplete="off" spellcheck="false" aria-label="Meet room name">
+            <input type="password" id="meet-pass" class="input-retro" placeholder="Room password..." autocomplete="off" aria-label="Meet room password" hidden>
+            <div class="meet-bots">
+                <div class="meet-bot" data-bot="sound">
+                    <div class="meet-bot-name">💿 <span class="bot-name">SoundBot</span></div>
+                    <div class="meet-bot-hint">plays the sound buttons</div>
+                    <div class="meet-bot-status">...</div>
+                    <button type="button" onclick="meetToggle('sound')">INVITE</button>
+                </div>
+                <div class="meet-bot" data-bot="dj">
+                    <div class="meet-bot-name">🎧 <span class="bot-name">DJ</span></div>
+                    <div class="meet-bot-hint">plays YouTube & links</div>
+                    <div class="meet-bot-status">...</div>
+                    <button type="button" onclick="meetToggle('dj')">INVITE</button>
+                </div>
+            </div>
+            <div id="meet-note" class="meet-note"></div>
+            <button type="button" class="meet-close-btn" onclick="closeMeetModal()">CLOSE</button>
+        </div>
     </div>
 
     <script>
@@ -402,6 +439,49 @@
 
        // --- MEET BOTS -------------------------------------------------------
        // The room name is never shown once a bot is in a room.
+       let meetModalTrigger = null;
+
+       function openMeetModal() {
+           const modal = document.getElementById('meet-modal');
+           meetModalTrigger = document.activeElement;
+           modal.hidden = false;
+           document.getElementById('meet-room-open').setAttribute('aria-expanded', 'true');
+           document.body.style.overflow = 'hidden';
+           const roomInput = document.getElementById('meet-room');
+           if (!roomInput.disabled) roomInput.focus();
+           else modal.querySelector('.meet-close-btn').focus();
+       }
+
+       function closeMeetModal() {
+           const modal = document.getElementById('meet-modal');
+           if (modal.hidden) return;
+           modal.hidden = true;
+           document.getElementById('meet-room-open').setAttribute('aria-expanded', 'false');
+           document.body.style.overflow = '';
+           if (meetModalTrigger) meetModalTrigger.focus();
+       }
+
+       function meetBackdropClick(event) {
+           if (event.target === event.currentTarget) closeMeetModal();
+       }
+
+       document.addEventListener('keydown', event => {
+           const modal = document.getElementById('meet-modal');
+           if (event.key === 'Escape') closeMeetModal();
+           if (event.key !== 'Tab' || modal.hidden) return;
+
+           const focusable = [...modal.querySelectorAll('input:not([disabled]):not([hidden]), button:not([disabled])')];
+           const first = focusable[0];
+           const last = focusable[focusable.length - 1];
+           if (event.shiftKey && document.activeElement === first) {
+               event.preventDefault();
+               last.focus();
+           } else if (!event.shiftKey && document.activeElement === last) {
+               event.preventDefault();
+               first.focus();
+           }
+       });
+
        const MEET_BOTS = ['sound', 'dj'];
        let meetState = {};
        const meetPending = {};
