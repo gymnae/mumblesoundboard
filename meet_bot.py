@@ -30,6 +30,7 @@ AUDIO_SAMPLE_RATE = 48000
 AUDIO_CHANNELS = 1
 AUDIO_SAMPLES_PER_FRAME = 960
 AUDIO_BYTES_PER_FRAME = AUDIO_SAMPLES_PER_FRAME * 2
+DEFAULT_IDLE_TIMEOUT_SECONDS = 60 * 60
 
 
 def copy_pcm_to_frame(frame, pcm):
@@ -117,6 +118,14 @@ class MeetBot:
         self._stop_event = threading.Event()
         self._thread = None
         self._last_frame_warning = 0.0
+        try:
+            self.idle_timeout_seconds = max(
+                1.0,
+                float(os.getenv("MEET_IDLE_TIMEOUT_SECONDS", DEFAULT_IDLE_TIMEOUT_SECONDS)),
+            )
+        except ValueError:
+            self.idle_timeout_seconds = float(DEFAULT_IDLE_TIMEOUT_SECONDS)
+        self._last_audio_at = None
 
     @property
     def configured(self):
@@ -186,6 +195,7 @@ class MeetBot:
             self.password = password
             self.error = None
             self.connecting = True
+            self._last_audio_at = None
             self._stop_event.clear()
 
             self._thread = threading.Thread(target=self._run, daemon=True)
@@ -204,21 +214,44 @@ class MeetBot:
         return True, "Disconnected."
 
     def status(self):
-        return {
-            'name': self.bot_name,
-            'configured': self.configured,
-            'connected': self.connected,
-            'connecting': self.connecting,
-            'room': self.room_name,
-            'error': self.error,
-        }
+        with self.lock:
+            last_audio_at = self._last_audio_at
+            idle_seconds = (
+                max(0.0, time.monotonic() - last_audio_at)
+                if self.connected and last_audio_at is not None
+                else None
+            )
+            return {
+                'name': self.bot_name,
+                'configured': self.configured,
+                'connected': self.connected,
+                'connecting': self.connecting,
+                'room': self.room_name,
+                'error': self.error,
+                'idle_seconds': idle_seconds,
+                'idle_timeout_seconds': self.idle_timeout_seconds,
+            }
 
     def feed(self, pcm):
         """Called by the mixer thread with 20ms s16le mono 48kHz chunks."""
         loop, q = self._loop, self._queue
         if loop and q and self.connected:
+            with self.lock:
+                # Each MeetBot receives only its own audio class, so SoundBot and
+                # DJ maintain independent inactivity deadlines.
+                self._last_audio_at = time.monotonic()
             # asyncio queues are not thread-safe: touch the queue only on its loop
             loop.call_soon_threadsafe(self._enqueue, q, pcm)
+
+    def _idle_timed_out(self, now=None):
+        """Return whether the connected session has received no audio for too long."""
+        with self.lock:
+            last_audio_at = self._last_audio_at
+        if last_audio_at is None:
+            return False
+        if now is None:
+            now = time.monotonic()
+        return now - last_audio_at >= self.idle_timeout_seconds
 
     @staticmethod
     def _enqueue(q, pcm):
@@ -251,6 +284,7 @@ class MeetBot:
                 self._room = None
                 self._source = None
                 self._queue = None
+                self._last_audio_at = None
             print(f"[{self.label}] Stopped.")
 
     async def _run_async(self):
@@ -320,6 +354,8 @@ class MeetBot:
         with self.lock:
             self.connected = True
             self.connecting = False
+            # A bot with no playback at all also leaves one hour after joining.
+            self._last_audio_at = time.monotonic()
 
         # consumer: publish queued audio at real-time pace.
         # The mixer produces exactly 960 samples (20ms) per chunk.
@@ -347,8 +383,14 @@ class MeetBot:
 
         publisher_task = asyncio.ensure_future(publisher())
 
-        # watcher: wait for stop or remote disconnect
+        # watcher: wait for stop, remote disconnect, or one hour without audio
         while not self._stop_event.is_set() and room.isconnected():
+            if self._idle_timed_out():
+                print(
+                    f"[{self.label}] Leaving after {self.idle_timeout_seconds:g}s "
+                    "without audio."
+                )
+                break
             await asyncio.sleep(0.5)
 
         publisher_task.cancel()

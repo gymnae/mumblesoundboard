@@ -96,5 +96,75 @@ class MeetBotTokenTests(unittest.TestCase):
                 bot._request_token()
 
 
+class MeetBotIdleTimeoutTests(unittest.TestCase):
+    def make_bot(self, name='SoundBot'):
+        with mock.patch.dict(os.environ, {
+            'MEET_URL': 'https://schnackn.example',
+            'MEET_IDLE_TIMEOUT_SECONDS': '3600',
+        }, clear=True):
+            return MeetBot(mock.Mock(), name)
+
+    def connect_fake_session(self, bot, last_audio_at=100.0):
+        bot._loop = mock.Mock()
+        bot._queue = mock.Mock()
+        bot.connected = True
+        bot._last_audio_at = last_audio_at
+
+    def test_times_out_one_hour_after_last_audio(self):
+        bot = self.make_bot()
+        self.connect_fake_session(bot)
+
+        self.assertFalse(bot._idle_timed_out(now=3699.999))
+        self.assertTrue(bot._idle_timed_out(now=3700.0))
+
+    def test_feed_refreshes_activity_for_connected_bot(self):
+        bot = self.make_bot()
+        self.connect_fake_session(bot)
+
+        with mock.patch('meet_bot.time.monotonic', return_value=500.0):
+            bot.feed(bytes(AUDIO_BYTES_PER_FRAME))
+
+        self.assertEqual(bot._last_audio_at, 500.0)
+        bot._loop.call_soon_threadsafe.assert_called_once_with(
+            bot._enqueue,
+            bot._queue,
+            bytes(AUDIO_BYTES_PER_FRAME),
+        )
+
+    def test_bots_track_activity_independently(self):
+        sound = self.make_bot('SoundBot')
+        dj = self.make_bot('DJ')
+        self.connect_fake_session(sound)
+        self.connect_fake_session(dj)
+
+        with mock.patch('meet_bot.time.monotonic', return_value=1000.0):
+            sound.feed(bytes(AUDIO_BYTES_PER_FRAME))
+
+        self.assertEqual(sound._last_audio_at, 1000.0)
+        self.assertEqual(dj._last_audio_at, 100.0)
+
+    def test_feed_does_not_refresh_disconnected_bot(self):
+        bot = self.make_bot()
+        bot._loop = mock.Mock()
+        bot._queue = mock.Mock()
+        bot.connected = False
+        bot._last_audio_at = None
+
+        with mock.patch('meet_bot.time.monotonic', return_value=500.0):
+            bot.feed(bytes(AUDIO_BYTES_PER_FRAME))
+
+        self.assertIsNone(bot._last_audio_at)
+        bot._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_invalid_timeout_uses_one_hour_default(self):
+        with mock.patch.dict(os.environ, {
+            'MEET_URL': 'https://schnackn.example',
+            'MEET_IDLE_TIMEOUT_SECONDS': 'invalid',
+        }, clear=True):
+            bot = MeetBot(mock.Mock(), 'SoundBot')
+
+        self.assertEqual(bot.idle_timeout_seconds, 3600.0)
+
+
 if __name__ == '__main__':
     unittest.main()

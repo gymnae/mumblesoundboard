@@ -91,6 +91,7 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MEET_URL |	None |	Base URL of your Schnackn install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
 |MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside Schnackn.|
 |MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside Schnackn.|
+|MEET_IDLE_TIMEOUT_SECONDS |	3600 |	Seconds without receiving audio before each Schnackn bot automatically leaves its room. SoundBot and DJ track activity independently; ongoing playback refreshes the relevant bot.|
 |LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by Schnackn.|
 |LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked. They replace the TURN servers LiveKit would hand out itself.|
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
@@ -144,7 +145,7 @@ Two bots can be invited, each into one room at a time:
 * **SoundBot** plays the sound buttons.
 * **DJ** plays YouTube and other links.
 
-They are separate participants, so people in the room can turn the DJ's music down with Schnackn's per-person volume and still hear the sound buttons. Only the Schnackn address is needed:
+They are separate participants, so people in the room can turn the DJ's music down with Schnackn's per-person volume and still hear the sound buttons. Each bot automatically leaves after one hour without receiving audio. Their timers are independent, and actual audio frames keep the relevant bot connected until one hour after playback ends. The timeout can be changed with `MEET_IDLE_TIMEOUT_SECONDS`. Only the Schnackn address is needed:
 
 ```bash
   -e MEET_URL="https://your-meet-install" \
