@@ -439,10 +439,10 @@ class AudioEngine:
 
 audio_engine = AudioEngine()
 
-# --- MEET (LiveKit) BOTS ---
+# --- SCHNACKN (LiveKit) BOTS ---
 # Two independent participants, each invited to one room from the web UI:
 # SoundBot plays the sound buttons, DJ plays YouTube and other links. Listeners can
-# turn the DJ down in meet (per-person volume) and still hear the sound buttons.
+# turn the DJ down in Schnackn (per-person volume) and still hear the sound buttons.
 from meet_bot import MeetBot
 meet_bots = {
     'sound': MeetBot(audio_engine, os.getenv("MEET_BOT_NAME") or USER, label="SOUNDBOT"),
@@ -476,7 +476,7 @@ def mixer_loop():
     next_report = next_tick + AUDIO_METRICS_INTERVAL
     while True:
         sound_chunk, stream_chunk = audio_engine.get_chunks()
-        # feed Meet (non-blocking; drops chunk if consumer is behind)
+        # feed Schnackn (non-blocking; drops chunk if consumer is behind)
         if sound_chunk:
             meet_bots['sound'].feed(sound_chunk)
         if stream_chunk:
@@ -659,7 +659,7 @@ def meet_connect():
     if not room.strip():
         return "No room given", 400
     ok, msg = bot.connect(room.strip(), password)
-    return ("Meet connect: " + msg, 200) if ok else (msg, 409)
+    return ("Schnackn connect: " + msg, 200) if ok else (msg, 409)
 
 @app.route('/meet/disconnect', methods=['GET', 'POST'])
 def meet_disconnect():
@@ -667,7 +667,7 @@ def meet_disconnect():
     if not bot:
         return "Unknown bot (use bot=sound or bot=dj)", 400
     ok, msg = bot.disconnect()
-    return ("Meet disconnect: " + msg, 200) if ok else (msg, 409)
+    return ("Schnackn disconnect: " + msg, 200) if ok else (msg, 409)
 
 @app.route('/meet/status')
 def meet_status():

@@ -88,10 +88,10 @@ Open your browser and navigate to: http://your-server-ip:5000
 |INVIDIOUS_HOST |	None | 	Base URL of Invidious instance (e.g. https://tube.wxbu.de).|
 |INVIDIOUS_USER |	None |	Basic Auth Username for Invidious (if protected).|
 |INVIDIOUS_PASS |	None |	Basic Auth Password for Invidious.|
-|MEET_URL |	None |	Base URL of your meet install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
-|MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside meet.|
-|MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside meet.|
-|LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by meet.|
+|MEET_URL |	None |	Base URL of your Schnackn install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
+|MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside Schnackn.|
+|MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside Schnackn.|
+|LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by Schnackn.|
 |LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked. They replace the TURN servers LiveKit would hand out itself.|
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
 |LIVEKIT_ICE_CREDENTIAL |	None |	TURN password.|
@@ -135,22 +135,22 @@ stream is not, the upstream lossy source/transcode is the likely downgrade. If q
 deadline misses rise, investigate CPU scheduling, blocked I/O, or connectivity rather than bitrate.
 The connection log shows both the requested Opus bandwidth and the server-advertised ceiling.
 
-## 📺 Meet / LiveKit Session Integration
+## 📺 Schnackn / LiveKit Session Integration
 
-In addition to Mumble and Matrix, the soundboard can connect to a [meet](https://github.com/gymnae/meet) session (e.g. https://meet.wxbu.de) — a LiveKit-based WebRTC videochat. No changes to the meet installation are required.
+In addition to Mumble and Matrix, the soundboard can connect to a [Schnackn](https://github.com/gymnae/meet) session (e.g. https://meet.wxbu.de) — a LiveKit-based WebRTC videochat. No changes to the Schnackn installation are required.
 
 Two bots can be invited, each into one room at a time:
 
 * **SoundBot** plays the sound buttons.
 * **DJ** plays YouTube and other links.
 
-They are separate participants, so people in the room can turn the DJ's music down with meet's per-person volume and still hear the sound buttons. Only the meet address is needed:
+They are separate participants, so people in the room can turn the DJ's music down with Schnackn's per-person volume and still hear the sound buttons. Only the Schnackn address is needed:
 
 ```bash
   -e MEET_URL="https://your-meet-install" \
 ```
 
-In the web UI, type the **room name** in the *Meet room* panel and press **INVITE** on the SoundBot, the DJ or both. If the room has a password, a password field appears (meet checks it via `/api/token`). **LEAVE** takes a bot out again. The room name is not shown once a bot is in a room. The Mumble and Matrix integrations keep working independently and still get everything mixed together.
+In the web UI, type the **room name** in the *Schnackn room* panel and press **INVITE** on the SoundBot, the DJ or both. For a protected room, expand **OPTIONAL PASSWORD** and enter its password before inviting the bot (Schnackn checks it via `/api/token`). The field also opens automatically after a password-related error. Collapsing it clears the password so stale credentials are not submitted. **LEAVE** takes a bot out again. The room name is not shown once a bot is in a room. The Mumble and Matrix integrations keep working independently and still get everything mixed together.
 
 HTTP API (`bot` is `sound` or `dj`, default `sound`; GET or POST form fields):
 
@@ -185,7 +185,7 @@ docker exec <soundboard> python3 -c "import socket; socket.create_connection(('l
 
 A working invite logs `Connected (media path established).` and `Audio track published.`
 
-### Troubleshooting: bot joins but Meet audio is silent
+### Troubleshooting: bot joins but Schnackn audio is silent
 
 If the bot joins and publishes its track but every playback logs
 `frame publish failed: memoryview assignment: lvalue and rvalue have different structures`,

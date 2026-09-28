@@ -1,11 +1,11 @@
 """
-LiveKit / Meet (meet.wxbu.de) integration for the Mumble Retro Soundboard.
+LiveKit / Schnackn (meet.wxbu.de) integration for the Mumble Retro Soundboard.
 
-Connects as a headless participant (bot) to a Meet room and streams the PCM
+Connects as a headless participant (bot) to a Schnackn room and streams the PCM
 it is fed into the room. Each MeetBot is one participant in one room at a
 time; the soundboard runs two of them (SoundBot and DJ).
 
-The Meet gateway URL comes from the MEET_URL environment variable. Room name
+The Schnackn gateway URL comes from the MEET_URL environment variable. Room name
 and optional password come from the web UI.
 
 Flow (matches https://github.com/gymnae/meet):
@@ -124,8 +124,8 @@ class MeetBot:
         return bool(self.meet_base_url)
 
     def _request_token(self):
-        """Ask the Meet gateway for a join token + LiveKit server URL."""
-        # Normalize the room name exactly like the Meet backend does
+        """Ask the Schnackn gateway for a join token + LiveKit server URL."""
+        # Normalize the room name exactly like the Schnackn backend does
         clean_room = self.room_name.strip().lower()
         clean_room = ''.join(c for c in clean_room if c.isalnum() or c in '-_')
 
@@ -152,7 +152,7 @@ class MeetBot:
                 detail = None
             if e.code == 401:
                 raise RuntimeError("Wrong room password") from None
-            raise RuntimeError(f"Meet refused the join ({detail or f'HTTP {e.code}'})") from None
+            raise RuntimeError(f"Schnackn refused the join ({detail or f'HTTP {e.code}'})") from None
 
         # A protected room answers without a token until a password is sent
         if data.get('requiresPassword'):
@@ -160,7 +160,7 @@ class MeetBot:
         token = data.get('token')
         server_url = data.get('serverUrl') or self._fallback_livekit_url
         if not token or not server_url:
-            raise RuntimeError("Meet gateway returned no token/serverUrl")
+            raise RuntimeError("Schnackn gateway returned no token/serverUrl")
         # allow forcing the signal endpoint (e.g. internal wireguard address)
         if self._override_livekit_url:
             server_url = self._override_livekit_url
@@ -175,7 +175,7 @@ class MeetBot:
             if self.connected:
                 return False, f"{self.bot_name} is already in a room. Let it leave first."
             if not self.configured:
-                return False, "Meet integration not configured (MEET_URL missing)."
+                return False, "Schnackn integration not configured (MEET_URL missing)."
 
             # tear down any stale previous session to avoid duplicate bots
             if self._thread and self._thread.is_alive():
@@ -306,8 +306,8 @@ class MeetBot:
                       "to LiveKit did not. If the soundboard runs on the same server or network as LiveKit, "
                       "set 'rtc.advertise_internal_ip: true' in livekit.yaml. See README: "
                       "'Troubleshooting: wait_pc_connection timed out'.")
-                raise RuntimeError("Signal OK, but no media path to meet's server (see soundboard log)") from None
-            raise RuntimeError("Couldn't connect to meet's media server (details in the soundboard log)") from None
+                raise RuntimeError("Signal OK, but no media path to Schnackn's server (see soundboard log)") from None
+            raise RuntimeError("Couldn't connect to Schnackn's media server (details in the soundboard log)") from None
         print(f"[{self.label}] Connected (media path established).")
 
         self._source = rtc.AudioSource(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS)
