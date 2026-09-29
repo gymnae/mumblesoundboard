@@ -243,8 +243,25 @@ class MatrixAppService:
         request.add_header("Authorization", "Bearer " + self.config["as_token"])
         if data is not None:
             request.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return json.loads(response.read() or b"{}")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                response_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                response_body = "<unreadable response body>"
+            logger.error(
+                "Matrix Client API request failed: method=%s path=%s bot_mxid=%s "
+                "status=%s reason=%s response=%s",
+                method,
+                path,
+                self.config["bot_mxid"],
+                exc.code,
+                exc.reason,
+                response_body[:4096],
+            )
+            raise
 
     def _join_room(self, room):
         try:

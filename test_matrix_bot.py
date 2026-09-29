@@ -191,6 +191,25 @@ class OutboundTests(MatrixTestCase):
         self.assertEqual(request.method, "POST")
         self.assertEqual(result, {"ok": True})
 
+    def test_request_logs_matrix_error_response_without_token(self):
+        service = self.service()
+        error = urllib.error.HTTPError(
+            "https://hs.example/join",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b'{"errcode":"M_UNKNOWN","error":"registration failed"}'),
+        )
+        with mock.patch("matrix_bot.urllib.request.urlopen", side_effect=error):
+            with self.assertLogs("matrix_bot", level="ERROR") as captured:
+                with self.assertRaises(urllib.error.HTTPError):
+                    service._request("POST", "/_matrix/client/v3/join/%21room%3Aexample.org", {})
+        output = "\n".join(captured.output)
+        self.assertIn("status=500", output)
+        self.assertIn("M_UNKNOWN", output)
+        self.assertIn("registration failed", output)
+        self.assertNotIn("as-secret", output)
+
     def test_join_and_send_use_encoded_v3_paths(self):
         service = self.service()
         requests = []
