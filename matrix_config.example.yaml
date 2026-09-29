@@ -1,14 +1,19 @@
-# Matrix AppService Configuration
-homeserver: "https://matrix.example.com"
-user_id: "@soundbot:matrix.example.com"
-device_id: "SOUNDBOARD"
-appservice_token: "YOUR_APPSERVICE_TOKEN_HERE"
+# Shape of the runtime configuration consumed by the soundboard.
+# Prefer generate_matrix_registration.py: it creates this file and the matching
+# homeserver registration with secure independent tokens. This example is
+# deliberately disabled and must not be installed as-is.
+enabled: false
+homeserver_url: "https://matrix.example.com"
+server_name: "matrix.example.com"
+sender_localpart: "soundbot"
+as_token: "REPLACE_WITH_GENERATED_AS_TOKEN"
+hs_token: "REPLACE_WITH_GENERATED_HS_TOKEN"
 
-# Rooms to join automatically on startup
-rooms:
-  - "!room_id_1:matrix.example.com"
-  - "!room_id_2:matrix.example.com"
-  
-# LiveKit connection details for MatrixRTC audio pushing
-livekit_url: "wss://your-livekit-instance.example.com"
-livekit_token: "YOUR_LIVEKIT_TOKEN_HERE"
+# Default deny: commands and invitations are accepted only for these room IDs.
+allowed_rooms:
+  - "!room_id:matrix.example.com"
+# Rooms the bot should join when this process starts (must also be allowed above).
+startup_rooms: []
+# If true, rooms successfully joined by this process may issue commands too.
+allow_all_joined_rooms: false
+command_prefix: "!"

@@ -7,12 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopus0 \
     && rm -rf /var/lib/apt/lists/*
 
-# 1b. Install build dependencies (separate layer so runtime layer stays cached).
-#     These are only needed to build Matrix E2E (python-olm) wheels.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libolm-dev gcc python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # 2. Security: Create non-root user
 RUN useradd -m -u 1000 appuser
 
@@ -38,7 +32,7 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt && \
     pip install --no-deps pymumble==1.6.1 opuslib==3.0.1 && \
-    python -c "import importlib.metadata as m; from google.protobuf.internal import builder; import opuslib, pymumble_py3, nio, livekit, livekit.api; assert m.version('livekit') == '1.1.20'; assert int(m.version('protobuf').split('.')[0]) >= 5; print('deps OK')"
+    python -c "import importlib.metadata as m; from google.protobuf.internal import builder; import opuslib, pymumble_py3, livekit, livekit.api; assert m.version('livekit') == '1.1.20'; assert int(m.version('protobuf').split('.')[0]) >= 5; print('deps OK')"
 
 # 6. Copy App Code
 COPY . .

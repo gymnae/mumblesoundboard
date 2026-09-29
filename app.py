@@ -554,20 +554,79 @@ def mumble_loop():
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
-# --- MATRIX BOT STARTUP ---
-def matrix_loop():
-    try:
-        # matrix-nio needs an event loop in whichever thread it runs in
-        asyncio.new_event_loop()
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        import matrix_bot
-        print("[MATRIX] Starting Matrix AppService Bot...")
-        bot = matrix_bot.MatrixAppServiceBot(audio_engine=audio_engine)
-        bot.run_sync()
-    except Exception as e:
-        print(f"[MATRIX ERROR] Failed to start Matrix bot: {e}")
+# --- MATRIX APPLICATION SERVICE ---
+def handle_matrix_command(command, argument):
+    """Execute an already authenticated/allowlisted Matrix command in-process."""
+    if command == 'ping':
+        return "Pong! Ready to pump audio."
+    if command == 'stop':
+        audio_engine.stop_all()
+        return "Stopped audio."
+    if command == 'play':
+        if not argument:
+            return "Usage: !play <sound filename or URL>"
+        if argument.startswith(('http://', 'https://')):
+            stream_url, title, is_direct = resolve_video_data(argument)
+            if not stream_url:
+                return "Could not resolve stream."
+            if is_direct:
+                audio_engine.play_direct_stream(stream_url, title)
+            else:
+                audio_engine.play_via_ytdlp(stream_url, title)
+            update_stat(title)
+            return "Loading stream..."
+        if '..' in argument or argument.startswith('/'):
+            return "Invalid filename."
+        sound_path = os.path.join(SOUNDS_DIR, argument)
+        if not os.path.isfile(sound_path):
+            return "File not found in sounds directory."
+        audio_engine.play_file(sound_path, argument)
+        update_stat(argument)
+        return f"Playing: {argument}"
 
-threading.Thread(target=matrix_loop, daemon=True).start()
+from matrix_bot import MatrixAppService
+matrix_service = MatrixAppService(handle_matrix_command, data_dir=DATA_DIR)
+if matrix_service.enabled:
+    print(f"[MATRIX] Application Service enabled as {matrix_service.config['bot_mxid']}")
+else:
+    print("[MATRIX] Application Service disabled")
+
+
+def matrix_authenticated():
+    return matrix_service.authenticated(
+        request.headers.get('Authorization', ''),
+        request.args.get('access_token', ''),
+    )
+
+
+@app.route('/_matrix/app/v1/transactions/<path:txn_id>', methods=['PUT'])
+def matrix_transaction(txn_id):
+    if not matrix_authenticated():
+        return jsonify({'errcode': 'M_FORBIDDEN', 'error': 'Invalid homeserver token'}), 401
+    try:
+        matrix_service.receive_transaction(txn_id, request.get_json(force=True))
+    except (ValueError, TypeError):
+        return jsonify({'errcode': 'M_BAD_JSON', 'error': 'Invalid transaction'}), 400
+    return jsonify({})
+
+
+@app.route('/_matrix/app/v1/users/<path:user_id>', methods=['GET'])
+def matrix_user(user_id):
+    if not matrix_authenticated():
+        return jsonify({'errcode': 'M_FORBIDDEN', 'error': 'Invalid homeserver token'}), 401
+    if matrix_service.claim_user(user_id):
+        return jsonify({})
+    return jsonify({'errcode': 'M_NOT_FOUND', 'error': 'User not in namespace'}), 404
+
+
+@app.route('/_matrix/app/v1/rooms/<path:room_alias>', methods=['GET'])
+def matrix_room_alias(room_alias):
+    if not matrix_authenticated():
+        return jsonify({'errcode': 'M_FORBIDDEN', 'error': 'Invalid homeserver token'}), 401
+    if matrix_service.claim_alias(room_alias):
+        return jsonify({})
+    return jsonify({'errcode': 'M_NOT_FOUND', 'error': 'Alias not in namespace'}), 404
+
 
 @app.route('/')
 def index():

@@ -198,25 +198,195 @@ After rebuilding, invite the **SoundBot** and play a local sound, then invite th
 web stream. The log should contain the connection and track-publication messages for each bot and
 no `frame publish failed` warnings while audio is playing.
 
-## � Matrix & LiveKit Integration (MatrixRTC)
+## Matrix Application Service
 
-The unit features a dual-stack output, meaning it can stream audio to a Mumble server and a Matrix room simultaneously! Matrix integration operates via a local AppService bot that pushes WebRTC audio directly to your LiveKit SFU.
+Matrix support is a standard, homeserver-agnostic Application Service (AS); it does not use
+`matrix-nio`, `/sync`, MatrixRTC, or an AS token as a normal login token. The homeserver pushes
+room events to this application's stable AS v1 endpoints, and the application uses the stable
+client v3 API as its namespaced bot user to join rooms and send replies:
 
-### Setup Config
-Create your Matrix configuration based on the example:
+- `PUT /_matrix/app/v1/transactions/{txnId}`
+- `GET /_matrix/app/v1/users/{userId}`
+- `GET /_matrix/app/v1/rooms/{roomAlias}` (no aliases are claimed, so authenticated queries return
+  `M_NOT_FOUND`)
+
+Transactions and queued events are deduplicated in `/app/data/matrix_appservice.db`. There is no
+separate Matrix audio or MatrixRTC media path: commands invoke the same global soundboard engine
+used by the web UI, Mumble, and configured Schnackn bots.
+
+### Prerequisites and limitation
+
+You need homeserver administrator access, a network route in **both** directions, and an
+**unencrypted Matrix room**. The AS intentionally ignores `m.room.encrypted`; it has no encryption
+keys, crypto store, or device. The homeserver must reach the callback URL on TCP port 5000 (or a
+reverse-proxied equivalent), while the soundboard must reach the homeserver Client-Server API URL.
+Do not expose port 5000 publicly merely for Matrix; prefer a shared Docker network, private address,
+or authenticated TLS reverse proxy. AS endpoint requests are authenticated with `hs_token`.
+
+### 1. Generate matching registration and runtime files
+
+Run this once from the source checkout. Here `matrix.example.org` is the Matrix server name in
+MXIDs, `https://matrix.example.org` is the Client-Server API base URL reachable by the soundboard,
+and `http://soundboard:5000` is the callback URL reachable by the homeserver:
+
 ```bash
-cp matrix_config.example.yaml matrix_config.yaml
+python3 generate_matrix_registration.py \
+  --server-name matrix.example.org \
+  --homeserver-url https://matrix.example.org \
+  --url http://soundboard:5000 \
+  --sender-localpart soundbot \
+  --id mumblesoundboard \
+  --registration matrix-registration.yaml \
+  --config matrix_config.yaml
 ```
-- `appservice_token`: The token your bot uses to authenticate with the homeserver.
-- `rooms`: A list of room IDs (`!xxx:exampe.com`) the bot should auto-join.
-- `livekit_url` & `livekit_token`: Point to your LiveKit SFU instance used for MatrixRTC.
 
-### Chat Commands
-Direct the bot from any joined Matrix room:
-- `!play <filename>` — Plays a local audio file (e.g. `!play horn.mp3`).
-- `!play <url>` — Streams a YouTube URL or direct MP3 link.
-- `!stop` — System-wide kill switch; stops all currently playing audio.
-- `!ping` — Fast health check to see if the bot is listening.
+The bot MXID is derived exactly as `@<sender_localpart>:<server_name>`; the command above therefore
+creates `@soundbot:matrix.example.org`. It does not come from `homeserver_url`. The generator writes:
+
+- `matrix-registration.yaml`: the standard homeserver registration, with an exact exclusive user
+  namespace for that one MXID.
+- `matrix_config.yaml`: the soundboard runtime configuration with the same credentials.
+
+Both files are created mode `0600` with independent random `as_token` and `hs_token` values. They
+contain credentials: do not commit, paste into logs, or serve them over HTTP. Back them up securely.
+The generator refuses to overwrite either output; `--force` deliberately rotates both tokens, and
+requires replacing both installed files followed by homeserver and soundboard restarts.
+
+The checked-in `matrix-registration.example.yaml` and `matrix_config.example.yaml` only document the
+shape. Generating files is safer than manually copying placeholders.
+
+### 2. Configure rooms and runtime behavior
+
+Edit only the generated `matrix_config.yaml` for normal room policy:
+
+```yaml
+allowed_rooms:
+  - "!musicRoomId:matrix.example.org"
+startup_rooms:
+  - "!musicRoomId:matrix.example.org"
+allow_all_joined_rooms: false
+command_prefix: "!"
+```
+
+Keep the generated `homeserver_url`, `server_name`, `sender_localpart`, `as_token`, and `hs_token`
+unchanged and matching the homeserver registration. `allowed_rooms` is the security boundary:
+commands are ignored elsewhere and invitations are accepted only when the invited room ID is
+listed. Every `startup_rooms` entry must also be in `allowed_rooms`; valid entries are joined during
+startup, while others are logged and ignored. With `allow_all_joined_rooms: true`, rooms that this
+process successfully joined are also command-enabled and remembered in SQLite; this does **not**
+make invitations from arbitrary rooms acceptable. A leave event removes that remembered room.
+
+The runtime reads `matrix_config.yaml` from its working directory by default. `MATRIX_CONFIG`
+overrides that path. A missing, disabled, unreadable, incomplete, placeholder, or inconsistent file
+disables Matrix without disabling the rest of the soundboard.
+
+### 3. Install the homeserver registration
+
+Install the generated `matrix-registration.yaml` using the homeserver's normal Application Service
+registration mechanism, then restart the homeserver. The registration format is standard and is
+not tied to Synapse:
+
+- **Synapse:** copy the file to a path readable by the Synapse service, add that absolute path to
+  `app_service_config_files` in `homeserver.yaml`, and restart Synapse.
+- **tuwunel:** place the file in the appservice-registration directory configured for your tuwunel
+  installation and restart tuwunel. Container image paths and configuration names can vary by
+  package, so use the directory documented by the exact image/version rather than a Synapse path.
+
+Do not mount the registration into the soundboard; it belongs to the homeserver. Conversely,
+`matrix_config.yaml` belongs to the soundboard and must not be configured as a homeserver
+registration. If the homeserver itself runs in Docker, `http://soundboard:5000` works only when its
+container shares a network where `soundboard` resolves to this container. `localhost` inside either
+container means that same container, not the other service.
+
+### 4. Docker paths and persistence
+
+Mount the runtime file read-only and retain `/app/data`; the latter stores both existing statistics
+and Matrix transaction/join state:
+
+```bash
+docker run -d \
+  --name soundboard \
+  --restart unless-stopped \
+  --user 1000:1000 \
+  -p 5000:5000 \
+  -v "$(pwd)/sounds:/app/sounds:ro" \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/matrix_config.yaml:/run/secrets/matrix_config.yaml:ro" \
+  -e MATRIX_CONFIG=/run/secrets/matrix_config.yaml \
+  ghcr.io/YOUR_USERNAME/YOUR_REPO:latest
+```
+
+The host `data` directory must be writable by UID 1000. Do not mount a single SQLite file: retain the
+whole directory so SQLite WAL/SHM files can be created. Deleting `matrix_appservice.db` discards
+transaction deduplication and remembered joined-room state; it does not unregister the AS.
+
+### Commands
+
+In an allowed, joined, unencrypted room, send plain `m.text` messages (edits and notices are ignored):
+
+- `!ping` — reply `Pong! Ready to pump audio.`
+- `!play horn.mp3` — play a file beneath `/app/sounds`; absolute paths and names containing `..` are
+  rejected.
+- `!play https://…` — resolve and start a remote stream using the same Invidious/direct-stream logic
+  as the web UI.
+- `!stop` — stop all playback globally, including playback initiated outside Matrix.
+
+Only `ping`, `play`, and `stop` are recognized. Replace `!` if `command_prefix` was changed.
+
+### Endpoint diagnostics
+
+Test from the homeserver's network namespace. An omitted/wrong token should return HTTP 401; the
+correct **homeserver token** (`hs_token`, not `as_token`) should return `{}` for the exact bot MXID:
+
+```bash
+curl -i \
+  -H 'Authorization: Bearer YOUR_HS_TOKEN' \
+  'http://soundboard:5000/_matrix/app/v1/users/%40soundbot%3Amatrix.example.org'
+```
+
+A different user and every alias should return HTTP 404. Do not put real tokens in shell history on
+shared systems; use a protected environment/file when performing the equivalent check. For the
+reverse direction, execute a Client API reachability check inside the container:
+
+```bash
+docker exec soundboard python3 -c \
+  "import urllib.request; print(urllib.request.urlopen('https://matrix.example.org/_matrix/client/versions', timeout=10).status)"
+```
+
+On startup, logs should say `Application Service enabled as @soundbot:matrix.example.org`. A 200
+from the transaction endpoint proves callback authentication/reachability, but command replies also
+require outbound Client API reachability and a joined, allowlisted, unencrypted room.
+
+### Migrating from the legacy Matrix client
+
+Stop the old bot before enabling the AS to avoid duplicate command handling. Generate a fresh
+registration; do not reuse an old Matrix login access token as `as_token` or `hs_token`. Runtime
+aliases `homeserver`, `appservice_token`, and `rooms` are temporarily accepted as
+`homeserver_url`, `as_token`, and `allowed_rooms`, respectively. A legacy `user_id` is accepted only
+when it exactly equals the derived bot MXID. Prefer replacing all legacy keys with the generated
+schema.
+
+The old `nio_store` contains client sync/encryption state and is neither read nor migrated. Archive
+or remove it after rollback is no longer needed. The new persistent state is
+`data/matrix_appservice.db`. Installing an AS registration reserves/provisions the namespaced sender;
+do not separately log in or register that user with a password.
+
+### Troubleshooting
+
+- **Matrix is disabled:** inspect startup logs and the `MATRIX_CONFIG` path; verify YAML indentation,
+  required keys, distinct generated tokens, and that the mounted file is readable by UID 1000.
+- **Homeserver reports AS unavailable/timeouts:** test the callback from the homeserver container or
+  host. Correct DNS, Docker networks, firewall rules, callback scheme/port, and reverse-proxy routing.
+- **401 from AS endpoints:** the homeserver registration's `hs_token` differs from runtime config.
+  Reinstall matching generated output and restart both services.
+- **Bot cannot join or reply / Client API 401:** verify outbound DNS/TLS and `homeserver_url`, then
+  ensure the registration's `as_token` matches runtime config and AS impersonation is supported.
+- **Invite ignored:** use the immutable room ID (beginning `!`), not an alias, in `allowed_rooms`.
+- **Commands ignored:** ensure the bot joined, the room is allowlisted, the message is unencrypted
+  plain text, and the prefix matches. Encrypted rooms cannot be fixed by adding a `nio_store`.
+- **Startup room ignored:** it must also occur verbatim in `allowed_rooms`.
+- **Repeated events after loss of data:** restore the persisted `/app/data`; transaction IDs are
+  intentionally retained in SQLite across restarts.
 
 ## �🔒 Privacy & Proxying
 

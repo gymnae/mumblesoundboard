@@ -1,0 +1,15 @@
+# Format example only; do not register these placeholders. Run
+# generate_matrix_registration.py and install its generated registration with
+# your homeserver. The callback URL must be reachable from the homeserver.
+id: "mumblesoundboard"
+url: "http://soundboard:5000"
+as_token: "REPLACE_WITH_INDEPENDENT_AS_TOKEN"
+hs_token: "REPLACE_WITH_INDEPENDENT_HS_TOKEN"
+sender_localpart: "soundbot"
+rate_limited: false
+namespaces:
+  users:
+    - exclusive: true
+      regex: "^@soundbot:matrix\\.example\\.com$"
+  aliases: []
+  rooms: []
