@@ -5,9 +5,10 @@ yt-dlp
 ffmpeg-python==0.2.0
 gunicorn
 
-# WebRTC Audio (LiveKit is also used by the independent meeting integration).
-# The Matrix integration is an HTTP Application Service and needs no matrix-nio/E2EE.
-# Exact versions avoid resolver backtracking and make AudioFrame API changes explicit.
+# WebRTC audio: used by independent Meet and MatrixRTC publishers. MatrixRTC
+# Client-Server/OpenID calls are deliberately small HTTP calls (no matrix-nio).
+# Exact versions pin the tested AudioFrame API. This SDK does not expose the
+# MatrixRTC E2EE key provider, so e2ee_required fails closed.
 livekit==1.1.20
 livekit-api==1.1.0
 PyYAML

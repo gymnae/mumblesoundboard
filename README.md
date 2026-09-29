@@ -198,21 +198,59 @@ After rebuilding, invite the **SoundBot** and play a local sound, then invite th
 web stream. The log should contain the connection and track-publication messages for each bot and
 no `frame publish failed` warnings while audio is playing.
 
-## Matrix Application Service
+## MatrixRTC / Element Call audio
 
-Matrix support is a standard, homeserver-agnostic Application Service (AS); it does not use
-`matrix-nio`, `/sync`, MatrixRTC, or an AS token as a normal login token. The homeserver pushes
-room events to this application's stable AS v1 endpoints, and the application uses the stable
-client v3 API as its namespaced bot user to join rooms and send replies:
+Matrix audio is now a real MatrixRTC media participant, separate from the optional Application
+Service command plane. It uses a **normal Matrix account/device access token**, joins the configured
+Matrix room with Client-Server v3, obtains an OpenID token, exchanges that token at the configured
+Element Call MatrixRTC focus/JWT service, publishes `m.call.member` state for its device, and
+publishes the complete mixed 48 kHz mono s16le stream as a LiveKit microphone track. The mixer feeds
+a bounded 10-frame (200 ms by default) nonblocking queue; backpressure drops the oldest audio rather
+than stalling playback or accumulating latency.
+
+Configure the `matrix_rtc` mapping shown in `matrix_config.example.yaml`, mount it as a secret, and
+set `MATRIX_CONFIG`. `homeserver_url`, `focus_url`, and optional `livekit_url` are independently
+configurable for self-hosted deployments. The normal device `access_token` must never be an
+`as_token` or `hs_token`; use a dedicated bot account/device and invite it to `room_id`.
+
+Lifecycle is explicit: `autostart`, `POST /matrix/rtc/connect`, `POST /matrix/rtc/disconnect`, and
+`GET /matrix/rtc/status`. The global `GET /status` includes `matrix_rtc`. Status exposes identity,
+state, queue counters, protocol profile, and sanitized errors, but never credentials/OpenID/JWTs.
+Membership is refreshed while connected and cleared on orderly disconnect.
+
+### Supported protocol profile and E2EE limitation
+
+The version-sensitive wire contract is isolated in `MatrixRTCWireAdapter` and pinned as
+`matrixrtc-m.call.member-v1-livekit-openid`: stable `m.call.member` state with a per-device
+`memberships` array (`application: m.call`, `scope: m.room`, `membershipID`, `device_id`,
+`foci_preferred` LiveKit focus and `m.usermedia` feed), Matrix OpenID via
+`/_matrix/client/v3/user/{userId}/openid/request_token`, and a focus authorization request containing
+`room`, the complete `openid_token`, and `device_id`. The configured focus must return `jwt` or
+`token`, plus `livekit_service_url` or `url` (or configure `livekit_url`). If a deployment uses a
+newer/different focus request or membership schema, add/select a tested adapter rather than silently
+emitting speculative fields.
+
+MatrixRTC media E2EE is **not claimed**. The pinned LiveKit Python SDK does not expose the MatrixRTC
+media key-provider/key-distribution integration needed for compatible encrypted media. With
+`e2ee_required: true`, startup fails closed and reports the limitation. With false, transport is
+permitted only where unencrypted SFU media is acceptable; this does not make an encrypted Matrix
+room's MatrixRTC media encrypted.
+
+## Matrix Application Service (optional text commands only)
+
+The optional command plane is a standard, homeserver-agnostic Application Service (AS); it does not
+use an AS token as a normal device login or media credential. The homeserver pushes room events to
+this application's stable AS v1 endpoints, and the application uses the stable client v3 API as its
+namespaced bot user to join rooms and send replies:
 
 - `PUT /_matrix/app/v1/transactions/{txnId}`
 - `GET /_matrix/app/v1/users/{userId}`
 - `GET /_matrix/app/v1/rooms/{roomAlias}` (no aliases are claimed, so authenticated queries return
   `M_NOT_FOUND`)
 
-Transactions and queued events are deduplicated in `/app/data/matrix_appservice.db`. There is no
-separate Matrix audio or MatrixRTC media path: commands invoke the same global soundboard engine
-used by the web UI, Mumble, and configured Schnackn bots.
+Transactions and queued events are deduplicated in `/app/data/matrix_appservice.db`. Commands invoke
+the global soundboard engine, whose complete mixed PCM is independently fanned out to MatrixRTC.
+The AS itself carries no media and may remain disabled.
 
 ### Prerequisites and limitation
 
@@ -252,8 +290,9 @@ contain credentials: do not commit, paste into logs, or serve them over HTTP. Ba
 The generator refuses to overwrite either output; `--force` deliberately rotates both tokens, and
 requires replacing both installed files followed by homeserver and soundboard restarts.
 
-The checked-in `matrix-registration.example.yaml` and `matrix_config.example.yaml` only document the
-shape. Generating files is safer than manually copying placeholders.
+The checked-in `matrix-registration.example.yaml` documents the AS registration. The combined
+`matrix_config.example.yaml` documents both independent planes. The generator currently writes the
+legacy top-level AS mapping, which remains accepted; it does not create Matrix device credentials.
 
 ### 2. Configure rooms and runtime behavior
 

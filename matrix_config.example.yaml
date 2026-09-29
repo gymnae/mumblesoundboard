@@ -1,19 +1,38 @@
-# Shape of the runtime configuration consumed by the soundboard.
-# Prefer generate_matrix_registration.py: it creates this file and the matching
-# homeserver registration with secure independent tokens. This example is
-# deliberately disabled and must not be installed as-is.
-enabled: false
-homeserver_url: "https://matrix.example.com"
-server_name: "matrix.example.com"
-sender_localpart: "soundbot"
-as_token: "REPLACE_WITH_GENERATED_AS_TOKEN"
-hs_token: "REPLACE_WITH_GENERATED_HS_TOKEN"
+# Combined Matrix configuration. Keep this file mode 0600: access_token,
+# as_token and hs_token are credentials. MATRIX_CONFIG selects its path.
 
-# Default deny: commands and invitations are accepted only for these room IDs.
-allowed_rooms:
-  - "!room_id:matrix.example.com"
-# Rooms the bot should join when this process starts (must also be allowed above).
-startup_rooms: []
-# If true, rooms successfully joined by this process may issue commands too.
-allow_all_joined_rooms: false
-command_prefix: "!"
+# MatrixRTC MEDIA PLANE: a normal Matrix account/device, never AS credentials.
+matrix_rtc:
+  enabled: false
+  autostart: true
+  homeserver_url: "https://matrix.example.com"
+  user_id: "@soundbot:matrix.example.com"
+  device_id: "SOUNDBOARD01"
+  access_token: "NORMAL_MATRIX_DEVICE_ACCESS_TOKEN"
+  room_id: "!call_room_id:matrix.example.com"
+  # Element Call MatrixRTC authorization/JWT service endpoint. It accepts the
+  # OpenID token obtained from the homeserver and returns a LiveKit JWT + URL.
+  focus_url: "https://call.example.com/livekit/jwt"
+  # Optional fallback only if the focus response omits the LiveKit signal URL.
+  livekit_url: "wss://livekit.example.com"
+  queue_frames: 10              # 200 ms; oldest frame is dropped on pressure
+  membership_ttl_ms: 3600000
+  membership_refresh_ms: 1800000
+  # Current Python implementation cannot provide MatrixRTC media E2EE. true
+  # therefore fails closed instead of joining with a false encryption claim.
+  e2ee_required: false
+
+# Optional TEXT COMMAND PLANE. This remains a distinct Application Service.
+# Prefer generate_matrix_registration.py for matching secure AS credentials.
+appservice:
+  enabled: false
+  homeserver_url: "https://matrix.example.com"
+  server_name: "matrix.example.com"
+  sender_localpart: "soundbot_commands"
+  as_token: "REPLACE_WITH_GENERATED_AS_TOKEN"
+  hs_token: "REPLACE_WITH_GENERATED_HS_TOKEN"
+  allowed_rooms:
+    - "!room_id:matrix.example.com"
+  startup_rooms: []
+  allow_all_joined_rooms: false
+  command_prefix: "!"

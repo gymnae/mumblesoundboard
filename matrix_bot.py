@@ -1,7 +1,8 @@
-"""Small, homeserver-agnostic Matrix Application Service v1 runtime.
+"""Optional Matrix Application Service command plane.
 
-Only unencrypted room messages are supported.  The homeserver pushes events to the
-Flask routes; this module never performs /sync.
+This module handles only unencrypted text commands. It is not, and must never be
+represented as, the MatrixRTC media transport; that uses a distinct normal
+Matrix device identity in :mod:`matrix_rtc`.
 """
 import contextlib
 import hashlib
@@ -39,7 +40,10 @@ def load_matrix_config(path=None):
     if not isinstance(raw, dict):
         logger.error("Matrix disabled: %s must contain a YAML mapping", path)
         return {"enabled": False, "config_path": path}
-    if not raw.get("enabled", True):
+    # New combined files nest the optional AS plane. Continue accepting the
+    # historical top-level shape for existing deployments.
+    raw = raw.get("appservice", raw)
+    if not isinstance(raw, dict) or not raw.get("enabled", True):
         return {"enabled": False, "config_path": path}
 
     config = dict(raw)

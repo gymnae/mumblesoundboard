@@ -449,6 +449,10 @@ meet_bots = {
     'dj': MeetBot(audio_engine, os.getenv("MEET_DJ_NAME") or "DJ", label="DJ"),
 }
 
+# --- MATRIXRTC MEDIA (normal Matrix device; independent of AS commands) ---
+from matrix_rtc import MatrixRTCClient, load_matrix_rtc_config
+matrix_rtc = MatrixRTCClient(load_matrix_rtc_config())
+
 # --- CENTRAL MIXER ---
 # A single mixer thread pulls PCM from the audio engine at real-time pace
 # (20ms chunks) and fans it out: sound buttons to the SoundBot, web streams to
@@ -484,6 +488,9 @@ def mixer_loop():
         pcm_chunk = mix_pcm(sound_chunk, stream_chunk)
         if pcm_chunk:
             _increment_metric('frames_produced')
+            # MatrixRTC receives the complete global mix through its bounded,
+            # nonblocking queue; it never consumes AS transactions as media.
+            matrix_rtc.feed(pcm_chunk)
             # feed Mumble (drop oldest chunk if consumer is behind)
             if enqueue_latest(mumble_queue, pcm_chunk):
                 _increment_metric('queue_drops')
@@ -697,7 +704,9 @@ def get_status():
         'playing': is_playing,
         'meta': audio_engine.current_metadata if is_playing else None,
         'audio': metrics,
-        'meet': meet_status_all()
+        'meet': meet_status_all(),
+        'matrix_rtc': matrix_rtc.status(),
+        'matrix_appservice': {'enabled': matrix_service.enabled},
     })
 
 def meet_status_all():
@@ -731,6 +740,20 @@ def meet_disconnect():
 @app.route('/meet/status')
 def meet_status():
     return jsonify(meet_status_all())
+
+@app.route('/matrix/rtc/status')
+def matrix_rtc_status():
+    return jsonify(matrix_rtc.status())
+
+@app.route('/matrix/rtc/connect', methods=['POST'])
+def matrix_rtc_connect():
+    ok, message = matrix_rtc.start()
+    return jsonify({'ok': ok, 'message': message, 'status': matrix_rtc.status()}), (202 if ok else 409)
+
+@app.route('/matrix/rtc/disconnect', methods=['POST'])
+def matrix_rtc_disconnect():
+    ok, message = matrix_rtc.stop()
+    return jsonify({'ok': ok, 'message': message, 'status': matrix_rtc.status()})
 
 @app.route('/stats')
 def view_stats():
