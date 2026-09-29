@@ -265,9 +265,11 @@ class MatrixAppService:
 
     def _join_room(self, room):
         try:
+            logger.info("Matrix bot attempting to join %s as %s", room, self.config["bot_mxid"])
             encoded = urllib.parse.quote(room, safe="")
             result = self._request("POST", f"/_matrix/client/v3/join/{encoded}", {})
             room_id = result.get("room_id", room)
+            logger.info("Matrix bot joined %s (resolved room_id=%s)", room, room_id)
             with self._connect() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO joined_rooms(room_id, joined_at) VALUES (?, ?)",
@@ -277,6 +279,11 @@ class MatrixAppService:
             logger.exception("Matrix bot could not join %s", room)
 
     def _join_startup_rooms(self):
+        logger.info(
+            "Matrix startup join scan: configured=%d allowed=%d",
+            len(self.config["startup_rooms"]),
+            len(self.config["allowed_rooms"]),
+        )
         for room in self.config["startup_rooms"]:
             if room in self.config["allowed_rooms"]:
                 self._join_room(room)

@@ -172,8 +172,12 @@ class TransactionAndEventTests(MatrixTestCase):
         service = self.service(startup_rooms=["!allowed:example.org", "!denied:x"])
         joined = []
         service._join_room = joined.append
-        service._join_startup_rooms()
+        with self.assertLogs("matrix_bot", level="INFO") as captured:
+            service._join_startup_rooms()
         self.assertEqual(joined, ["!allowed:example.org"])
+        output = "\n".join(captured.output)
+        self.assertIn("configured=2 allowed=1", output)
+        self.assertIn("Ignoring startup room not present in allowed_rooms: !denied:x", output)
 
 
 class OutboundTests(MatrixTestCase):
@@ -214,8 +218,11 @@ class OutboundTests(MatrixTestCase):
         service = self.service()
         requests = []
         service._request = lambda method, path, body=None: requests.append((method, path, body)) or ({"room_id": "!joined:x"} if "/join/" in path else {})
-        service._join_room("#room name:example.org")
+        with self.assertLogs("matrix_bot", level="INFO") as captured:
+            service._join_room("#room name:example.org")
         service._send_message("!room/id:example.org", "reply")
+        self.assertIn("Matrix bot attempting to join #room name:example.org", "\n".join(captured.output))
+        self.assertIn("resolved room_id=!joined:x", "\n".join(captured.output))
         self.assertEqual(requests[0][0:2], ("POST", "/_matrix/client/v3/join/%23room%20name%3Aexample.org"))
         self.assertRegex(requests[1][1], r"^/_matrix/client/v3/rooms/%21room%2Fid%3Aexample\.org/send/m\.room\.message/[0-9a-f]{32}$")
         self.assertEqual(requests[1][2], {"msgtype": "m.text", "body": "reply"})
