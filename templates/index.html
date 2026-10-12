@@ -144,6 +144,27 @@
             padding-bottom: 8px;
         }
         
+        .sound-cover {
+            width: 120px;
+            height: 120px;
+            object-fit: cover;
+            margin-bottom: 8px;
+            background: #000080;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            box-sizing: border-box;
+        }
+        .sound-cover.no-cover { image-rendering: pixelated; }
+
+        .sound-tags {
+            font-size: 10px;
+            font-weight: normal;
+            color: #000080;
+            margin-top: 4px;
+        }
+
         .play-count { 
             font-size: 9px; 
             color: #555; 
@@ -324,8 +345,14 @@
 
         <div class="sound-grid">
             {% for sound in files %}
-            <div class="sound-btn" onclick="playSound('{{ sound.name }}')">
+            {% set tagline = [sound.artist, sound.title]|select|join(' – ') %}
+            <div class="sound-btn" data-name="{{ sound.name }}" onclick="playSound(this.dataset.name)"
+                 title="{{ [tagline, sound.album, sound.year]|select|join(' · ') or sound.name }}">
+                <img class="sound-cover{{ '' if sound.has_cover else ' no-cover' }}"
+                     src="{{ sound.cover_url if sound.has_cover else url_for('static', filename='cover_default.svg') }}"
+                     alt="" loading="lazy" decoding="async" width="120" height="120">
                 <span class="sound-name">💿 {{ sound.name }}</span>
+                {% if tagline %}<span class="sound-tags">{{ tagline }}</span>{% endif %}
                 <span class="play-count">Played: {{ sound.count }}</span>
             </div>
             {% endfor %}
@@ -392,7 +419,7 @@
 
         function playSound(name) {
             // No await here - fire and forget allows for spamming
-            fetch('/play/' + name);
+            fetch('/play/' + encodeURIComponent(name));
             updateStatus({playing: true, meta: {type: 'file', text: name}});
         }
 

@@ -13,6 +13,9 @@ livekit==1.1.20
 livekit-api==1.1.0
 PyYAML
 
+# Tag and cover-art extraction for sound tiles and /meta, /cover endpoints.
+mutagen
+
 # NOTE: pymumble/opuslib hard-pin protobuf==3.12.2 in their metadata, while
 # current LiveKit requires protobuf >=5. The Dockerfile installs the legacy
 # Mumble packages with --no-deps after this compatible dependency set.

@@ -18,7 +18,8 @@ A turnkey, lightweight, and secure Dockerized soundboard solution that connects 
     * Volume Slider.
     * Global Stop Button (Kill switch).
     * "ON AIR" visual indicator.
-    * **Search-as-you-type:** Instantly filter the soundboard grid by typing.
+    * **Search-as-you-type:** Instantly filter the soundboard grid by typing (also matches artist/title tags).
+* **Cover Art Tiles:** Each sound tile shows the cover embedded in the file's tags, or a pixel-art vinyl fallback when there is none.
 * **Statistics:** Tracks play counts for both local files and YouTube links in a persistent SQLite database.
 * **Security Hardened:** Runs as a non-root user (UID 1000) inside the container with read-only root filesystem access.
 
@@ -135,6 +136,29 @@ For troubleshooting, first test a lossless WAV at default volume. If WAV is clea
 stream is not, the upstream lossy source/transcode is the likely downgrade. If queue drops or
 deadline misses rise, investigate CPU scheduling, blocked I/O, or connectivity rather than bitrate.
 The connection log shows both the requested Opus bandwidth and the server-advertised ceiling.
+
+## 🎵 Sound metadata and cover art
+
+Tags and embedded cover art are read with [mutagen](https://mutagen.readthedocs.io/) from MP3/WAV
+(ID3 `APIC`), M4A (`covr`), FLAC (picture blocks) and Ogg Vorbis/Opus (`METADATA_BLOCK_PICTURE`).
+When several pictures are embedded, the front cover is preferred. Results are cached in memory and
+re-read automatically when a file's modification time or size changes.
+
+The same data is available over plain GET endpoints, alongside `GET /play/<file>`:
+
+- `GET /meta` — JSON list of all sounds.
+- `GET /meta/<file>` — JSON for one sound (404 if it does not exist):
+
+  ```json
+  {"name": "airhorn.mp3", "title": "Airhorn", "artist": "MLG", "album": null, "year": "2014",
+   "genre": "Effects", "duration": 2.35, "has_cover": true, "count": 42,
+   "play_url": "/play/airhorn.mp3", "cover_url": "/cover/airhorn.mp3", "meta_url": "/meta/airhorn.mp3"}
+  ```
+
+  Missing tags are `null`; `duration` is in seconds.
+- `GET /cover/<file>` — the embedded image (JPEG/PNG/…), or the generic SVG fallback if the file has
+  none. The `X-Cover-Source` response header is `embedded` or `default`. Responses carry an ETag and
+  are cacheable for an hour.
 
 ## 📺 Schnackn / LiveKit Session Integration
 

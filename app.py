@@ -15,11 +15,13 @@ import json
 import urllib.request
 import urllib.error
 import fcntl
+import io
 from urllib.parse import urlparse, urlunparse
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, url_for
 
 import pymumble_py3 as pymumble
 
+from sound_metadata import MetadataCache
 from audio_quality import (
     BYTES_PER_FRAME,
     FRAME_DURATION_SECONDS,
@@ -635,16 +637,47 @@ def matrix_room_alias(room_alias):
     return jsonify({'errcode': 'M_NOT_FOUND', 'error': 'Alias not in namespace'}), 404
 
 
+sound_metadata = MetadataCache()
+
+def allowed_extensions():
+    return tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
+
+def list_sounds():
+    if not os.path.exists(SOUNDS_DIR):
+        return []
+    return sorted(f for f in os.listdir(SOUNDS_DIR) if f.endswith(allowed_extensions()))
+
+def resolve_sound(filename):
+    """Absolute path of a playable file inside SOUNDS_DIR, or None."""
+    if ".." in filename or filename.startswith("/") or not filename.endswith(allowed_extensions()):
+        return None
+    path = os.path.join(SOUNDS_DIR, filename)
+    return path if os.path.isfile(path) else None
+
+def sound_info(filename, path, count=0):
+    """Public metadata record for one sound, as served by /meta and used by the tiles."""
+    try:
+        meta = sound_metadata.metadata(path)
+    except OSError:
+        return None
+    return dict(
+        meta,
+        name=filename,
+        count=count,
+        play_url=url_for('play', filename=filename),
+        cover_url=url_for('cover', filename=filename),
+        meta_url=url_for('sound_meta', filename=filename),
+    )
+
 @app.route('/')
 def index():
     sort_type = request.args.get('sort', 'alpha')
     stats = get_stats()
     files = []
-    valid_exts = tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
-    if os.path.exists(SOUNDS_DIR):
-        for f in os.listdir(SOUNDS_DIR):
-            if f.endswith(valid_exts):
-                files.append({ 'name': f, 'count': stats.get(f, 0) })
+    for f in list_sounds():
+        info = sound_info(f, os.path.join(SOUNDS_DIR, f), stats.get(f, 0))
+        if info:
+            files.append(info)
     if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
     else: files.sort(key=lambda x: x['name'])
     
@@ -652,6 +685,50 @@ def index():
                          files=files, 
                          vol_local=int(audio_engine.volume_local * 100),
                          vol_remote=int(audio_engine.volume_remote * 100))
+
+@app.route('/meta')
+def all_meta():
+    stats = get_stats()
+    files = []
+    for f in list_sounds():
+        info = sound_info(f, os.path.join(SOUNDS_DIR, f), stats.get(f, 0))
+        if info:
+            files.append(info)
+    return jsonify(files)
+
+@app.route('/meta/<path:filename>')
+def sound_meta(filename):
+    path = resolve_sound(filename)
+    info = sound_info(filename, path, get_stats().get(filename, 0)) if path else None
+    if not info:
+        return jsonify({'error': 'File not found'}), 404
+    return jsonify(info)
+
+@app.route('/cover/<path:filename>')
+def cover(filename):
+    """Embedded cover art, or the generic retro cover when the file has none.
+    X-Cover-Source tells API clients which one they got."""
+    path = resolve_sound(filename)
+    if not path:
+        return "File not found", 404
+    try:
+        art = sound_metadata.cover(path)
+    except OSError:
+        return "File not found", 404
+    if art is None:
+        response = send_from_directory(app.static_folder, 'cover_default.svg', max_age=3600)
+        response.headers['X-Cover-Source'] = 'default'
+        return response
+    mime, data, (mtime_ns, size) = art
+    response = send_file(
+        io.BytesIO(data),
+        mimetype=mime,
+        etag=f"{mtime_ns:x}-{size:x}",
+        last_modified=mtime_ns / 1e9,
+        max_age=3600,
+    )
+    response.headers['X-Cover-Source'] = 'embedded'
+    return response
 
 @app.route('/play/<path:filename>')
 def play(filename):
