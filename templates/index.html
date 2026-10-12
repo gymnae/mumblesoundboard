@@ -63,6 +63,40 @@
             word-break: break-all; 
         }
 
+        .status-panel { flex-wrap: wrap; }
+
+        .now-art {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+            max-width: 132px;
+            margin: 0;
+        }
+        .now-art[hidden] { display: none; }
+        .now-art img {
+            height: 72px;
+            background: #000080;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            box-sizing: border-box;
+            object-fit: cover;
+        }
+        #art-sound img { width: 72px; }
+        #art-stream img { width: 128px; }
+        .now-art img.no-cover { image-rendering: pixelated; }
+        .now-art figcaption {
+            font-size: 10px;
+            color: #00FF00;
+            max-width: 100%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .now-art figcaption b { color: #FFFF00; }
+
         @keyframes blink { 50% { opacity: 0.5; } }
 
         /* FIXED RAINBOW ANIMATION (One Direction Loop) */
@@ -324,6 +358,14 @@
         <div class="status-panel">
             <div id="lamp" class="status-lamp"></div>
             <span id="lamp-text" class="status-text">STANDBY</span>
+            <figure id="art-sound" class="now-art" hidden>
+                <img alt="" width="72" height="72">
+                <figcaption><b>SFX</b> <span></span></figcaption>
+            </figure>
+            <figure id="art-stream" class="now-art" hidden>
+                <img alt="" width="128" height="72">
+                <figcaption><b>BGM</b> <span></span></figcaption>
+            </figure>
             <div id="track-info" class="track-info"></div>
         </div>
 
@@ -453,12 +495,37 @@
                 .catch(e => console.debug("Poller error (ignored)"));
         }
 
+        // Shows the cover / thumbnail of what is playing. Only touches the <img>
+        // when the URL changes, so the 1s status poll does not cause flicker.
+        function setNowArt(id, src, caption, isDefault) {
+            const box = document.getElementById(id);
+            box.hidden = !src;
+            if (!src) return;
+            const img = box.querySelector('img');
+            if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+            img.classList.toggle('no-cover', isDefault);
+            box.querySelector('figcaption span').innerText = caption;
+            box.title = caption;
+        }
+
+        function updateNowPlaying(np) {
+            const sound = np && np.sound;
+            const stream = np && np.stream;
+            setNowArt('art-sound', sound && sound.cover_url,
+                      sound ? [sound.artist, sound.title].filter(Boolean).join(' – ') || sound.name : '',
+                      !(sound && sound.has_cover));
+            setNowArt('art-stream', stream && stream.thumbnail_url,
+                      stream ? stream.title : '', !(stream && stream.has_thumbnail));
+        }
+
         function updateStatus(data) {
             const lamp = document.getElementById('lamp');
             const text = document.getElementById('lamp-text');
            const info = document.getElementById('track-info');
 
            updateMeetStatus(data.meet);
+           // Optimistic local updates carry no now_playing: keep the current art then
+           if ('now_playing' in data || !data.playing) updateNowPlaying(data.now_playing);
 
             if(data.playing) {
                 lamp.classList.add('active');

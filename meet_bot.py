@@ -12,6 +12,8 @@ Flow (matches https://github.com/gymnae/meet):
   1. POST {MEET_URL}/api/token  {roomName, nickname, password}
      -> { token, serverUrl }   (serverUrl = the actual LiveKit endpoint)
   2. Connect to serverUrl with the returned JWT and publish audio.
+  3. Optionally publish a camera track that shows the now-playing artwork
+     (album cover or video thumbnail) as a still image.
 """
 
 import threading
@@ -31,6 +33,13 @@ AUDIO_CHANNELS = 1
 AUDIO_SAMPLES_PER_FRAME = 960
 AUDIO_BYTES_PER_FRAME = AUDIO_SAMPLES_PER_FRAME * 2
 DEFAULT_IDLE_TIMEOUT_SECONDS = 60 * 60
+
+VIDEO_WIDTH = 640
+VIDEO_HEIGHT = 360
+DEFAULT_VIDEO_FPS = 5
+# Keep showing the last picture this long after playback ends, so sounds
+# triggered in quick succession don't make the camera flicker on and off.
+VIDEO_OFF_DELAY_SECONDS = 3.0
 
 
 def copy_pcm_to_frame(frame, pcm):
@@ -54,8 +63,11 @@ def copy_pcm_to_frame(frame, pcm):
 
 
 class MeetBot:
-    def __init__(self, audio_engine, bot_name, label="MEET"):
+    def __init__(self, audio_engine, bot_name, label="MEET", artwork=None):
         self.audio_engine = audio_engine
+        # Callable returning an artwork.Artwork for what this bot is playing, or
+        # None. When set, the bot publishes it as a camera track.
+        self.artwork = artwork if os.getenv("MEET_VIDEO", "1") != "0" else None
         # display name in the meet session, and the prefix of this bot's log lines
         self.bot_name = bot_name
         self.label = label
@@ -126,6 +138,10 @@ class MeetBot:
         except ValueError:
             self.idle_timeout_seconds = float(DEFAULT_IDLE_TIMEOUT_SECONDS)
         self._last_audio_at = None
+        try:
+            self.video_fps = max(1.0, min(30.0, float(os.getenv("MEET_VIDEO_FPS", DEFAULT_VIDEO_FPS))))
+        except ValueError:
+            self.video_fps = float(DEFAULT_VIDEO_FPS)
 
     @property
     def configured(self):
@@ -382,6 +398,13 @@ class MeetBot:
                         self._last_frame_warning = now
 
         publisher_task = asyncio.ensure_future(publisher())
+        video_task = None
+        if self.artwork:
+            try:
+                video_task = asyncio.ensure_future(await self._start_video(rtc, room))
+            except Exception as e:
+                # Audio matters more than the picture: carry on without video.
+                print(f"[{self.label} WARN] Could not publish artwork video: {e}")
 
         # watcher: wait for stop, remote disconnect, or one hour without audio
         while not self._stop_event.is_set() and room.isconnected():
@@ -394,7 +417,98 @@ class MeetBot:
             await asyncio.sleep(0.5)
 
         publisher_task.cancel()
+        if video_task:
+            video_task.cancel()
         try:
             await room.disconnect()
         except Exception:
             pass
+
+    async def _start_video(self, rtc, room):
+        """Publish a (muted) camera track and return the coroutine that feeds it."""
+        source = rtc.VideoSource(VIDEO_WIDTH, VIDEO_HEIGHT, is_screencast=True)
+        track = rtc.LocalVideoTrack.create_video_track(self.bot_name, source)
+        options = rtc.TrackPublishOptions(
+            source=rtc.TrackSource.SOURCE_CAMERA,
+            simulcast=False,
+            video_encoding=rtc.VideoEncoding(max_framerate=self.video_fps, max_bitrate=400_000),
+        )
+        await room.local_participant.publish_track(track, options)
+        track.mute()
+        print(f"[{self.label}] Artwork video track published.")
+
+        def make_frame(rgba):
+            return rtc.VideoFrame(VIDEO_WIDTH, VIDEO_HEIGHT, rtc.VideoBufferType.RGBA, rgba)
+
+        return ArtworkVideo(self, source, track, make_frame).run(room)
+
+
+class ArtworkVideo:
+    """Feeds a still-image camera track from a MeetBot's artwork provider.
+
+    The track is unmuted while there is something to show and muted again
+    VIDEO_OFF_DELAY_SECONDS after playback ends. Frames are only re-rendered
+    when the artwork key changes; in between the same frame is resent so that
+    viewers joining later get a keyframe quickly.
+    """
+
+    def __init__(self, bot, source, track, make_frame):
+        self.bot = bot
+        self.source = source
+        self.track = track
+        self.make_frame = make_frame
+        self.key = None
+        self.frame = None
+        self.muted = True
+        self.idle_since = None
+        self._last_warning = 0.0
+
+    def _warn(self, message):
+        now = time.monotonic()
+        if now - self._last_warning >= 5.0:
+            print(f"[{self.bot.label} WARN] {message}")
+            self._last_warning = now
+
+    async def step(self, now):
+        try:
+            art = self.bot.artwork()
+        except Exception as e:
+            self._warn(f"artwork lookup failed: {e}")
+            art = None
+
+        if art is None:
+            if not self.muted:
+                if self.idle_since is None:
+                    self.idle_since = now
+                elif now - self.idle_since >= VIDEO_OFF_DELAY_SECONDS:
+                    self.track.mute()
+                    self.muted = True
+                    self.key = self.frame = self.idle_since = None
+        else:
+            self.idle_since = None
+            if art.key != self.key:
+                self.key = art.key
+                try:
+                    # Decoding and scaling take tens of ms: keep them off the
+                    # event loop that also paces the audio frames.
+                    rgba = await asyncio.get_running_loop().run_in_executor(None, self._render, art)
+                    self.frame = self.make_frame(rgba)
+                except Exception as e:
+                    self._warn(f"artwork render failed: {e}")
+            if self.frame is not None and self.muted:
+                self.track.unmute()
+                self.muted = False
+
+        if self.frame is not None and not self.muted:
+            self.source.capture_frame(self.frame)
+
+    @staticmethod
+    def _render(art):
+        from artwork import render_frame
+        return render_frame(art.load(), art.title, art.subtitle, VIDEO_WIDTH, VIDEO_HEIGHT)
+
+    async def run(self, room):
+        interval = 1.0 / self.bot.video_fps
+        while not self.bot._stop_event.is_set() and room.isconnected():
+            await self.step(time.monotonic())
+            await asyncio.sleep(interval)

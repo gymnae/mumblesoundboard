@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -5,7 +6,14 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from meet_bot import AUDIO_BYTES_PER_FRAME, MeetBot, copy_pcm_to_frame
+from artwork import Artwork
+from meet_bot import (
+    AUDIO_BYTES_PER_FRAME,
+    VIDEO_OFF_DELAY_SECONDS,
+    ArtworkVideo,
+    MeetBot,
+    copy_pcm_to_frame,
+)
 
 
 class FakeAudioFrame:
@@ -164,6 +172,74 @@ class MeetBotIdleTimeoutTests(unittest.TestCase):
             bot = MeetBot(mock.Mock(), 'SoundBot')
 
         self.assertEqual(bot.idle_timeout_seconds, 3600.0)
+
+
+class ArtworkVideoTests(unittest.TestCase):
+    def setUp(self):
+        self.art = None
+        with mock.patch.dict(os.environ, {'MEET_URL': 'https://schnackn.example'}, clear=True):
+            self.bot = MeetBot(mock.Mock(), 'SoundBot', artwork=lambda: self.art)
+        self.source = mock.Mock()
+        self.track = mock.Mock()
+        self.video = ArtworkVideo(self.bot, self.source, self.track, make_frame=lambda rgba: ('frame', rgba))
+        render = mock.patch.object(ArtworkVideo, '_render', side_effect=lambda art: art.title.encode())
+        self.render = render.start()
+        self.addCleanup(render.stop)
+
+    def step(self, now):
+        asyncio.run(self.video.step(now))
+
+    def test_stays_muted_without_artwork(self):
+        self.step(0.0)
+
+        self.track.unmute.assert_not_called()
+        self.source.capture_frame.assert_not_called()
+
+    def test_unmutes_and_renders_once_per_artwork(self):
+        self.art = Artwork('a', 'Song', None, lambda: None)
+
+        self.step(0.0)
+        self.step(0.2)
+
+        self.track.unmute.assert_called_once()
+        self.render.assert_called_once()
+        self.assertEqual(self.source.capture_frame.call_args_list, [mock.call(('frame', b'Song'))] * 2)
+
+    def test_rerenders_when_key_changes(self):
+        self.art = Artwork('a', 'One', None, lambda: None)
+        self.step(0.0)
+        self.art = Artwork('b', 'Two', None, lambda: None)
+        self.step(0.2)
+
+        self.assertEqual(self.render.call_count, 2)
+        self.source.capture_frame.assert_called_with(('frame', b'Two'))
+
+    def test_keeps_last_picture_briefly_then_mutes(self):
+        self.art = Artwork('a', 'Song', None, lambda: None)
+        self.step(0.0)
+        self.art = None
+
+        self.step(1.0)
+        self.step(1.0 + VIDEO_OFF_DELAY_SECONDS - 0.01)
+        self.track.mute.assert_not_called()
+        self.assertEqual(self.source.capture_frame.call_count, 3)
+
+        self.step(1.0 + VIDEO_OFF_DELAY_SECONDS)
+        self.track.mute.assert_called_once()
+        self.assertEqual(self.source.capture_frame.call_count, 3)
+
+    def test_provider_errors_are_treated_as_no_artwork(self):
+        self.bot.artwork = mock.Mock(side_effect=RuntimeError('boom'))
+
+        self.step(0.0)
+
+        self.track.unmute.assert_not_called()
+
+    def test_video_can_be_disabled(self):
+        with mock.patch.dict(os.environ, {'MEET_URL': 'https://x', 'MEET_VIDEO': '0'}, clear=True):
+            bot = MeetBot(mock.Mock(), 'DJ', artwork=lambda: None)
+
+        self.assertIsNone(bot.artwork)
 
 
 if __name__ == '__main__':

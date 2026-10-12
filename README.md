@@ -92,6 +92,8 @@ Open your browser and navigate to: http://your-server-ip:5000
 |MEET_URL |	None |	Base URL of your Schnackn install (e.g. https://meet.wxbu.de). Used to request join tokens from its /api/token endpoint.|
 |MEET_BOT_NAME |	MUMBLE_USER |	Display name of the SoundBot (plays the sound buttons) inside Schnackn.|
 |MEET_DJ_NAME |	DJ |	Display name of the DJ (plays YouTube and other links) inside Schnackn.|
+|MEET_VIDEO |	1 |	Set to `0` to stop the Schnackn bots from publishing the now-playing artwork as a camera image.|
+|MEET_VIDEO_FPS |	5 |	Frame rate of that still-image camera track (1–30). Higher values only make it quicker for people joining later to see the picture.|
 |MEET_IDLE_TIMEOUT_SECONDS |	3600 |	Seconds without receiving audio before each Schnackn bot automatically leaves its room. SoundBot and DJ track activity independently; ongoing playback refreshes the relevant bot.|
 |LIVEKIT_FORCE_URL |	None |	Force the LiveKit signal endpoint for the bot (e.g. ws://10.1.1.5:7880 for internal wireguard traffic). Overrides the serverUrl returned by Schnackn.|
 |LIVEKIT_ICE_URLS |	None |	Comma-separated TURN/STUN URLs for the bot's media path (e.g. `turn:turn.example.com:443?transport=tcp`). Needed if UDP to the LiveKit SFU is blocked. They replace the TURN servers LiveKit would hand out itself.|
@@ -160,6 +162,26 @@ The same data is available over plain GET endpoints, alongside `GET /play/<file>
   none. The `X-Cover-Source` response header is `embedded` or `default`. Responses carry an ETag and
   are cacheable for an hour.
 
+### Now playing
+
+The ON AIR panel shows the cover of the newest sound button that is still playing (SFX) and, side by
+side, the thumbnail of the running YouTube stream (BGM). The same information is in `GET /status`:
+
+```json
+"now_playing": {
+  "sound":  {"name": "airhorn.mp3", "title": "Airhorn", "artist": "MLG", "album": null,
+             "has_cover": true, "cover_url": "/cover/airhorn.mp3", "meta_url": "/meta/airhorn.mp3"},
+  "stream": {"title": "YouTube: …", "link": "…", "has_thumbnail": true,
+             "thumbnail_url": "/now_playing/thumbnail?v=3t"}
+}
+```
+
+Either entry is `null` when nothing of that kind plays. `GET /now_playing/thumbnail` returns the
+current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`). YouTube thumbnails
+are fetched only through `INVIDIOUS_HOST`, with the same credentials and Google-avoiding URL rewrite
+as the audio, so the browser never contacts YouTube either. Other links played via yt-dlp have no
+thumbnail.
+
 ## 📺 Schnackn / LiveKit Session Integration
 
 In addition to Mumble and Matrix, the soundboard can connect to a [Schnackn](https://github.com/gymnae/meet) session (e.g. https://meet.wxbu.de) — a LiveKit-based WebRTC videochat. No changes to the Schnackn installation are required.
@@ -169,7 +191,9 @@ Two bots can be invited, each into one room at a time:
 * **SoundBot** plays the sound buttons.
 * **DJ** plays YouTube and other links.
 
-They are separate participants, so people in the room can turn the DJ's music down with Schnackn's per-person volume and still hear the sound buttons. Each bot automatically leaves after one hour without receiving audio. Their timers are independent, and actual audio frames keep the relevant bot connected until one hour after playback ends. The timeout can be changed with `MEET_IDLE_TIMEOUT_SECONDS`. Only the Schnackn address is needed:
+They are separate participants, so people in the room can turn the DJ's music down with Schnackn's per-person volume and still hear the sound buttons.
+
+Each bot also publishes a camera track showing what it plays: the SoundBot shows the cover of the current sound, the DJ the YouTube thumbnail, each with title and artist in the retro style (the vinyl graphic stands in when there is no picture). The camera turns on with playback and off again a few seconds after it ends. Disable it with `MEET_VIDEO=0`. Each bot automatically leaves after one hour without receiving audio. Their timers are independent, and actual audio frames keep the relevant bot connected until one hour after playback ends. The timeout can be changed with `MEET_IDLE_TIMEOUT_SECONDS`. Only the Schnackn address is needed:
 
 ```bash
   -e MEET_URL="https://your-meet-install" \

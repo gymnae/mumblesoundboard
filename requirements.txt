@@ -15,6 +15,8 @@ PyYAML
 
 # Tag and cover-art extraction for sound tiles and /meta, /cover endpoints.
 mutagen
+# Renders the artwork camera image the Schnackn bots publish (needs load_default(size)).
+Pillow>=10.1
 
 # NOTE: pymumble/opuslib hard-pin protobuf==3.12.2 in their metadata, while
 # current LiveKit requires protobuf >=5. The Dockerfile installs the legacy

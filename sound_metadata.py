@@ -46,7 +46,7 @@ def _first_text(tags, keys):
     return None
 
 
-def _sniff_mime(data):
+def sniff_mime(data):
     if data.startswith(b'\x89PNG'):
         return 'image/png'
     if data.startswith(b'GIF8'):
@@ -64,7 +64,7 @@ def _pick_picture(pictures):
     pictures.sort(key=lambda p: p[0] != FRONT_COVER)
     _, mime, data = pictures[0]
     if not mime or not mime.startswith('image/'):
-        mime = _sniff_mime(data)
+        mime = sniff_mime(data)
     return mime, data
 
 

@@ -16,12 +16,13 @@ import urllib.request
 import urllib.error
 import fcntl
 import io
+import itertools
 from urllib.parse import urlparse, urlunparse
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, url_for
 
 import pymumble_py3 as pymumble
 
-from sound_metadata import MetadataCache
+from sound_metadata import MetadataCache, sniff_mime
 from audio_quality import (
     BYTES_PER_FRAME,
     FRAME_DURATION_SECONDS,
@@ -119,8 +120,48 @@ def get_stats():
         cursor = conn.execute("SELECT * FROM stats")
         return {row['filename']: row['count'] for row in cursor.fetchall()}
 
+# Thumbnail qualities to try, best first. maxres does not exist for every
+# video; medium (320x180, 16:9 without letterbox bars) always does.
+THUMBNAIL_QUALITIES = ('maxres', 'maxresdefault', 'medium')
+MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
+
+def invidious_thumbnail_urls(thumbnails):
+    """Candidate thumbnail URLs from an Invidious API response, all forced onto INVIDIOUS_HOST."""
+    by_quality = {t.get('quality'): t.get('url') for t in thumbnails or [] if t.get('url')}
+    parsed_proxy = urlparse(INVIDIOUS_HOST)
+    urls = []
+    for quality in THUMBNAIL_QUALITIES:
+        raw = by_quality.get(quality)
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        # Same rule as for the audio stream: never contact Google directly.
+        urls.append(urlunparse((parsed_proxy.scheme, parsed_proxy.netloc, parsed.path, '', parsed.query, '')))
+    return urls
+
+def fetch_thumbnail(urls):
+    """First thumbnail that loads, as bytes, or None."""
+    for url in urls:
+        req = urllib.request.Request(url)
+        if AUTH_HEADER_VAL:
+            req.add_header("Authorization", AUTH_HEADER_VAL)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if not response.headers.get_content_type().startswith('image/'):
+                    continue
+                data = response.read(MAX_THUMBNAIL_BYTES + 1)
+        except Exception as e:
+            print(f"[THUMBNAIL] {url}: {e}")
+            continue
+        # A missing maxres thumbnail can come back as YouTube's tiny grey
+        # 120x90 placeholder instead of an error.
+        if 2048 < len(data) <= MAX_THUMBNAIL_BYTES:
+            return data
+    return None
+
 # --- STRICT CONFIGURED HOST REWRITE RESOLVER ---
 def resolve_video_data(url):
+    """Returns (stream_url, title, is_direct, thumbnail_urls); stream_url is None on failure."""
     # 1. Match standard YouTube URLs OR extract the v= ID from a custom companion domain
     youtube_regex = r'(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})'
     match = re.search(youtube_regex, url)
@@ -138,7 +179,7 @@ def resolve_video_data(url):
         # 2. STRICTLY enforce the use of the configured INVIDIOUS_HOST
         if not INVIDIOUS_HOST:
             print("[SECURITY BLOCK] INVIDIOUS_HOST not set. Blocking direct Google contact.")
-            return None, None, False
+            return None, None, False, []
 
         # 3. Fetch Metadata and Stream Data via API from the configured host ONLY
         title = f"YouTube ID: {video_id}"
@@ -165,7 +206,7 @@ def resolve_video_data(url):
                     
                 if not target_format or 'url' not in target_format:
                     print("[API FAIL] No audio streams found in API response.")
-                    return None, None, False
+                    return None, None, False, []
                     
                 raw_stream_url = target_format['url']
                 
@@ -190,14 +231,15 @@ def resolve_video_data(url):
                     ))
                     
                     print(f"[DEBUG] Intercepted stream, routing strictly via configured Invidious: {final_stream_url}")
-                    return final_stream_url, f"YouTube: {title}", True
+                    thumbnails = invidious_thumbnail_urls(data.get('videoThumbnails'))
+                    return final_stream_url, f"YouTube: {title}", True, thumbnails
                     
         except Exception as e:
             print(f"[API FAIL] Could not fetch data from configured host {INVIDIOUS_HOST}: {e}")
-            return None, None, False
+            return None, None, False, []
 
     # Allow non-YouTube URLs (e.g., direct mp3 links) to pass through to yt-dlp naturally
-    return url, "External Stream", False
+    return url, "External Stream", False, []
 
 class AudioEngine:
     def __init__(self):
@@ -206,6 +248,9 @@ class AudioEngine:
         self.volume_remote = 0.50 
         self.lock = threading.Lock()
         self.current_metadata = None 
+        # The running web stream: {'id', 'title', 'link', 'thumbnail'}.
+        self.stream_info = None
+        self._stream_ids = itertools.count(1)
         self.MAX_CHANNELS = 8 
 
     def _kill_process(self, p):
@@ -256,6 +301,7 @@ class AudioEngine:
         print(f"[DEBUG] FFMPEG Connecting to Direct Stream: {url}")
         self._stop_existing_remote() 
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
+        self.stream_info = self._new_stream_info(display_title, url)
         
         cmd = ['ffmpeg']
         if FFMPEG_HEADERS:
@@ -277,6 +323,7 @@ class AudioEngine:
         print(f"[DEBUG] Processing via yt-dlp: {url}")
         self._stop_existing_remote()
         self.current_metadata = {'type': 'url', 'text': display_title, 'link': url}
+        self.stream_info = self._new_stream_info(display_title, url)
         
         dlp_cmd = ['yt-dlp', '--no-cache-dir', '--yes-playlist']
         
@@ -327,6 +374,24 @@ class AudioEngine:
         with self.lock:
             self.active_processes.append(p_ffmpeg)
 
+    def _new_stream_info(self, title, link):
+        return {'id': next(self._stream_ids), 'title': title, 'link': link, 'thumbnail': None}
+
+    def set_stream_thumbnail(self, info, data):
+        """Attach a thumbnail, unless another stream has started in the meantime."""
+        with self.lock:
+            if self.stream_info is info:
+                self.stream_info = dict(info, thumbnail=data)
+
+    def now_playing(self):
+        """(newest still-running sound button filename or None, web stream info or None)."""
+        with self.lock:
+            alive = [p for p in self.active_processes if p.poll() is None]
+            sound = next((p.tag_filename for p in reversed(alive)
+                          if getattr(p, 'source_type', 'local') == 'local' and p.tag_filename), None)
+            stream_alive = any(getattr(p, 'source_type', 'local') == 'remote' for p in alive)
+            return sound, self.stream_info if stream_alive else None
+
     def _start_process_internal(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
         stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
         
@@ -355,6 +420,7 @@ class AudioEngine:
 
     def stop_all(self):
         self.current_metadata = None
+        self.stream_info = None
         with self.lock:
             for p in self.active_processes[:]: 
                 self._kill_process(p)
@@ -445,10 +511,36 @@ audio_engine = AudioEngine()
 # Two independent participants, each invited to one room from the web UI:
 # SoundBot plays the sound buttons, DJ plays YouTube and other links. Listeners can
 # turn the DJ down in Schnackn (per-person volume) and still hear the sound buttons.
+# Each bot also shows its artwork (cover / video thumbnail) as a camera image.
 from meet_bot import MeetBot
+from artwork import Artwork
+
+def sound_artwork():
+    name, _ = audio_engine.now_playing()
+    path = resolve_sound(name) if name else None
+    if not path:
+        return None
+    try:
+        meta = sound_metadata.metadata(path)
+    except OSError:
+        return None
+    def load():
+        art = sound_metadata.cover(path)
+        return art[1] if art else None
+    subtitle = ' · '.join(filter(None, [meta['artist'], meta['album'], meta['year']]))
+    return Artwork(('sound', name), meta['title'] or name, subtitle or None, load)
+
+def stream_artwork():
+    _, stream = audio_engine.now_playing()
+    if not stream:
+        return None
+    host = urlparse(stream['link']).hostname
+    return Artwork(('stream', stream['id'], stream['thumbnail'] is not None),
+                   stream['title'], host, lambda: stream['thumbnail'])
+
 meet_bots = {
-    'sound': MeetBot(audio_engine, os.getenv("MEET_BOT_NAME") or USER, label="SOUNDBOT"),
-    'dj': MeetBot(audio_engine, os.getenv("MEET_DJ_NAME") or "DJ", label="DJ"),
+    'sound': MeetBot(audio_engine, os.getenv("MEET_BOT_NAME") or USER, label="SOUNDBOT", artwork=sound_artwork),
+    'dj': MeetBot(audio_engine, os.getenv("MEET_DJ_NAME") or "DJ", label="DJ", artwork=stream_artwork),
 }
 
 # --- MATRIXRTC MEDIA (normal Matrix device; independent of AS commands) ---
@@ -563,6 +655,25 @@ def mumble_loop():
 
 threading.Thread(target=mumble_loop, daemon=True).start()
 
+def play_external(raw_url):
+    """Resolve and start a web stream; fetch its thumbnail in the background.
+    Returns False if the URL could not be resolved."""
+    stream_url, title, is_direct, thumbnail_urls = resolve_video_data(raw_url)
+    if not stream_url:
+        return False
+    if is_direct:
+        audio_engine.play_direct_stream(stream_url, title)
+    else:
+        audio_engine.play_via_ytdlp(stream_url, title)
+    info = audio_engine.stream_info
+    if thumbnail_urls and info:
+        threading.Thread(
+            target=lambda: audio_engine.set_stream_thumbnail(info, fetch_thumbnail(thumbnail_urls)),
+            daemon=True,
+        ).start()
+    update_stat(title)
+    return True
+
 # --- MATRIX APPLICATION SERVICE ---
 def handle_matrix_command(command, argument):
     """Execute an already authenticated/allowlisted Matrix command in-process."""
@@ -575,14 +686,8 @@ def handle_matrix_command(command, argument):
         if not argument:
             return "Usage: !play <sound filename or URL>"
         if argument.startswith(('http://', 'https://')):
-            stream_url, title, is_direct = resolve_video_data(argument)
-            if not stream_url:
+            if not play_external(argument):
                 return "Could not resolve stream."
-            if is_direct:
-                audio_engine.play_direct_stream(stream_url, title)
-            else:
-                audio_engine.play_via_ytdlp(stream_url, title)
-            update_stat(title)
             return "Loading stream..."
         if '..' in argument or argument.startswith('/'):
             return "Invalid filename."
@@ -744,13 +849,7 @@ def play(filename):
 def play_external_url():
     raw_url = request.args.get('url')
     if raw_url:
-        stream_url, title, is_direct = resolve_video_data(raw_url)
-        if stream_url:
-            if is_direct:
-                audio_engine.play_direct_stream(stream_url, title)
-            else:
-                audio_engine.play_via_ytdlp(stream_url, title)
-            update_stat(title)
+        if play_external(raw_url):
             return "Playing URL", 200
         else:
             return "Could not resolve stream", 500
@@ -780,11 +879,44 @@ def get_status():
     return jsonify({
         'playing': is_playing,
         'meta': audio_engine.current_metadata if is_playing else None,
+        'now_playing': now_playing_info(),
         'audio': metrics,
         'meet': meet_status_all(),
         'matrix_rtc': matrix_rtc.status(),
         'matrix_appservice': {'enabled': matrix_service.enabled},
     })
+
+def now_playing_info():
+    """What each bot is showing: the newest sound button and the web stream."""
+    name, stream = audio_engine.now_playing()
+    sound = None
+    path = resolve_sound(name) if name else None
+    if path:
+        info = sound_info(name, path)
+        if info:
+            sound = {key: info[key] for key in ('name', 'title', 'artist', 'album', 'has_cover', 'cover_url', 'meta_url')}
+    if stream:
+        stream = {
+            'title': stream['title'],
+            'link': stream['link'],
+            'has_thumbnail': stream['thumbnail'] is not None,
+            # ?v= changes with every stream (and once its thumbnail arrives) so browsers refetch
+            'thumbnail_url': url_for('stream_thumbnail', v=f"{stream['id']}{'t' if stream['thumbnail'] else ''}"),
+        }
+    return {'sound': sound, 'stream': stream}
+
+@app.route('/now_playing/thumbnail')
+def stream_thumbnail():
+    """Thumbnail of the running web stream, or the generic cover if there is none."""
+    _, stream = audio_engine.now_playing()
+    data = stream and stream['thumbnail']
+    if not data:
+        response = send_from_directory(app.static_folder, 'cover_default.svg', max_age=60)
+        response.headers['X-Cover-Source'] = 'default'
+        return response
+    response = send_file(io.BytesIO(data), mimetype=sniff_mime(data), max_age=3600)
+    response.headers['X-Cover-Source'] = 'embedded'
+    return response
 
 def meet_status_all():
     return {key: bot.status() for key, bot in meet_bots.items()}
