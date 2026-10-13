@@ -9,16 +9,18 @@
             color: #00FF00;
             font-family: "Courier New", Courier, monospace;
             margin: 0;
-            padding-bottom: 180px;
             background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg==');
         }
         a { color: #FFFF00; }
+        img { max-width: 100%; }
         h1 { text-align: center; text-shadow: 2px 2px #FF0000; }
         
+        /* Wide enough for ~10 tiles on big screens; beyond that the rows would
+           get too long to scan, so the page stays centred. */
         .container {
-            max-width: 800px;
+            max-width: 1680px;
             margin: 0 auto;
-            padding: 10px;
+            padding: 10px clamp(10px, 2vw, 24px);
         }
 
         .status-panel {
@@ -130,15 +132,18 @@
             border: 2px inset #FFF;
             padding: 5px;
             font-family: "Courier New", Courier, monospace;
-            width: 60%;
+            width: min(100%, 480px);
+            box-sizing: border-box;
             margin-top: 10px;
         }
 
+        /* As many columns as fit at ~150px, stretched to fill the row; never
+           fewer than two, so small phones do not fall back to one tall column. */
         .sound-grid {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            justify-content: center;
+            --tile-gap: clamp(8px, 1vw, 14px);
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(min(150px, calc(50% - var(--tile-gap) / 2)), 1fr));
+            gap: var(--tile-gap);
         }
 
         .sound-btn {
@@ -149,12 +154,13 @@
             border-bottom: 2px solid #000000;
             color: #000000;
             padding: 10px;
-            width: 140px; 
+            box-sizing: border-box;
+            min-width: 0;
             min-height: 60px; 
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center; 
+            justify-content: flex-start;
             font-size: 12px;
             font-weight: bold;
             text-align: center;
@@ -179,8 +185,9 @@
         }
         
         .sound-cover {
-            width: 120px;
-            height: 120px;
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1;
             object-fit: cover;
             margin-bottom: 8px;
             background: #000080;
@@ -206,10 +213,12 @@
             font-weight: normal;
         }
 
+        /* Sticky rather than fixed: it still hugs the bottom edge, but takes up
+           its own space at the end of the page, so however tall it wraps it
+           never hides the last row of sounds. */
         .control-deck {
-            position: fixed;
+            position: sticky;
             bottom: 0;
-            left: 0;
             width: 100%;
             background: #C0C0C0;
             border-top: 4px outset #FFFFFF;
@@ -266,6 +275,25 @@
             padding: 3px;
             font-family: monospace;
             width: 200px;
+        }
+
+        .url-group { flex-direction: row; }
+
+        /* Phones: two compact columns instead of one stacked control per row. */
+        @media (max-width: 600px) {
+            .control-deck {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+                padding: 8px;
+            }
+            .control-group { min-width: 0; }
+            .control-group input[type="range"] { width: 100%; }
+            .url-group { grid-column: 1 / -1; }
+            .url-group .input-retro { flex: 1; min-width: 0; width: auto; min-height: 32px; }
+            .url-group button { min-height: 32px; }
+            .stop-btn,
+            .schnackn-room-btn { height: auto; min-height: 44px; padding: 8px; }
         }
 
         /* --- SCHNACKN BOTS: invite SoundBot and DJ into a room --- */
@@ -412,7 +440,7 @@
             <input type="range" min="0" max="100" value="{{ vol_remote }}" onchange="setRemoteVolume(this.value)" title="YouTube/Web Volume">
         </div>
 
-        <div class="control-group" style="flex-direction: row;">
+        <div class="control-group url-group">
             <label>URL:</label>
             <input type="text" id="yt-url" class="input-retro" placeholder="Paste YouTube URL...">
             <button onclick="playUrl()">PLAY</button>
