@@ -167,21 +167,24 @@ The same data is available over plain GET endpoints, alongside `GET /play/<file>
 
 ### Now playing
 
-The ON AIR panel shows the cover of the newest sound button that is still playing (SFX) and, side by
-side, the thumbnail of the running YouTube stream (BGM). The same information is in `GET /status`:
+The ON AIR panel shows the cover of every sound button that is still playing (SFX, newest first) and,
+side by side, the thumbnail of the running YouTube stream (BGM). The same information is in
+`GET /status`:
 
 ```json
 "now_playing": {
   "sound":  {"name": "airhorn.mp3", "title": "Airhorn", "artist": "MLG", "album": null,
              "has_cover": true, "cover_url": "/cover/airhorn.mp3", "meta_url": "/meta/airhorn.mp3"},
+  "sounds": [{"name": "airhorn.mp3", …}, {"name": "drumroll.wav", …}],
   "stream": {"title": "YouTube: …", "link": "…", "has_thumbnail": true,
              "thumbnail_url": "/now_playing/thumbnail?v=3t"}
 }
 ```
 
-Either entry is `null` when nothing of that kind plays. Sound buttons can overlap, so `now_playing`
-names only the newest; `"playing_sounds": ["airhorn.mp3", "drumroll.wav"]` lists every sound file still
-playing, oldest first. `GET /now_playing/thumbnail` returns the
+Sound buttons can overlap: `sounds` lists every one still playing, newest first, with the same
+fields as `sound`, which is the newest one (the one the SoundBot shows). `sound` and `stream` are
+`null` and `sounds` is empty when nothing of that kind plays. The top-level
+`"playing_sounds": ["drumroll.wav", "airhorn.mp3"]` lists just the file names, oldest first. `GET /now_playing/thumbnail` returns the
 current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`), and it takes the same
 `?size=N`. YouTube thumbnails
 are fetched only through `INVIDIOUS_HOST`, with the same credentials and Google-avoiding URL rewrite

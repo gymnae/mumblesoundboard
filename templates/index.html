@@ -86,7 +86,19 @@
             box-sizing: border-box;
             object-fit: cover;
         }
-        #art-sound img { width: 72px; }
+        /* One cover per overlapping sound button, newest first; smaller once
+           there are more than fit comfortably on a phone. */
+        .now-sounds {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+        }
+        .now-sounds:empty { display: none; }
+        .now-sounds .now-art { max-width: 80px; }
+        .now-sounds .now-art img { width: 72px; }
+        .now-sounds.many .now-art { max-width: 56px; }
+        .now-sounds.many .now-art img { width: 48px; height: 48px; }
         #art-stream img { width: 128px; }
         .now-art img.no-cover { image-rendering: pixelated; }
         .now-art figcaption {
@@ -386,10 +398,7 @@
         <div class="status-panel">
             <div id="lamp" class="status-lamp"></div>
             <span id="lamp-text" class="status-text">STANDBY</span>
-            <figure id="art-sound" class="now-art" hidden>
-                <img alt="" width="72" height="72">
-                <figcaption><b>SFX</b> <span></span></figcaption>
-            </figure>
+            <div id="art-sounds" class="now-sounds"></div>
             <figure id="art-stream" class="now-art" hidden>
                 <img alt="" width="128" height="72">
                 <figcaption><b>BGM</b> <span></span></figcaption>
@@ -536,12 +545,41 @@
             box.title = caption;
         }
 
+        function soundCaption(sound) {
+            return [sound.artist, sound.title].filter(Boolean).join(' – ') || sound.name;
+        }
+
+        // One figure per playing sound, newest first. Figures of sounds that keep
+        // playing are reused, so their covers are not reloaded on every poll.
+        function updateNowSounds(sounds) {
+            const box = document.getElementById('art-sounds');
+            const old = new Map([...box.children].map(fig => [fig.dataset.name, fig]));
+            const figures = sounds.map((sound, i) => {
+                let fig = old.get(sound.name);
+                if (!fig) {
+                    fig = document.createElement('figure');
+                    fig.className = 'now-art';
+                    fig.dataset.name = sound.name;
+                    fig.innerHTML = '<img alt="" width="72" height="72"><figcaption><b></b> <span></span></figcaption>';
+                }
+                const img = fig.querySelector('img');
+                if (img.getAttribute('src') !== sound.cover_url) img.setAttribute('src', sound.cover_url);
+                img.classList.toggle('no-cover', !sound.has_cover);
+                // Label only the newest, so a row of covers stays readable
+                fig.querySelector('figcaption b').textContent = i === 0 ? 'SFX' : '';
+                fig.querySelector('figcaption span').textContent = soundCaption(sound);
+                fig.title = soundCaption(sound);
+                return fig;
+            });
+            box.classList.toggle('many', sounds.length > 3);
+            if (figures.some((fig, i) => box.children[i] !== fig) || box.children.length !== figures.length) {
+                box.replaceChildren(...figures);
+            }
+        }
+
         function updateNowPlaying(np) {
-            const sound = np && np.sound;
             const stream = np && np.stream;
-            setNowArt('art-sound', sound && sound.cover_url,
-                      sound ? [sound.artist, sound.title].filter(Boolean).join(' – ') || sound.name : '',
-                      !(sound && sound.has_cover));
+            updateNowSounds((np && np.sounds) || []);
             setNowArt('art-stream', stream && stream.thumbnail_url,
                       stream ? stream.title : '', !(stream && stream.has_thumbnail));
         }
@@ -563,9 +601,17 @@
                 info.style.display = 'block';
                 if(data.meta) {
                     if(data.meta.type === 'url' && data.meta.link) {
-                        info.innerHTML = `PLAYING: <a href="${data.meta.link}" target="_blank">WATCH VIDEO</a>`;
+                        const link = document.createElement('a');
+                        link.href = data.meta.link;
+                        link.target = '_blank';
+                        link.rel = 'noopener';
+                        link.textContent = 'WATCH VIDEO';
+                        info.replaceChildren('PLAYING: ', link);
                     } else {
-                        info.innerHTML = `PLAYING: ${data.meta.text}`;
+                        // Overlapping sound buttons: name them all (the poll lists them)
+                        const names = data.playing_sounds && data.playing_sounds.length
+                            ? data.playing_sounds.slice().reverse() : [data.meta.text];
+                        info.textContent = 'PLAYING: ' + names.join(' + ');
                     }
                 } else {
                     info.innerText = "Processing...";

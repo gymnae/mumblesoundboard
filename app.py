@@ -921,15 +921,20 @@ def get_status():
         'matrix_appservice': {'enabled': matrix_service.enabled},
     })
 
+def now_playing_sound(name):
+    """Short metadata record for one playing sound button, or None if it is gone."""
+    path = resolve_sound(name)
+    info = sound_info(name, path) if path else None
+    if not info:
+        return None
+    return {key: info[key] for key in ('name', 'title', 'artist', 'album', 'has_cover', 'cover_url', 'meta_url')}
+
 def now_playing_info():
-    """What each bot is showing: the newest sound button and the web stream."""
-    name, stream = audio_engine.now_playing()
-    sound = None
-    path = resolve_sound(name) if name else None
-    if path:
-        info = sound_info(name, path)
-        if info:
-            sound = {key: info[key] for key in ('name', 'title', 'artist', 'album', 'has_cover', 'cover_url', 'meta_url')}
+    """What is on air: every playing sound button (newest first; 'sound' is the
+    newest, which the SoundBot shows) and the web stream."""
+    _, stream = audio_engine.now_playing()
+    sounds = [s for s in map(now_playing_sound, reversed(audio_engine.playing_sounds())) if s]
+    sound = sounds[0] if sounds else None
     if stream:
         stream = {
             'title': stream['title'],
@@ -938,7 +943,7 @@ def now_playing_info():
             # ?v= changes with every stream (and once its thumbnail arrives) so browsers refetch
             'thumbnail_url': url_for('stream_thumbnail', v=f"{stream['id']}{'t' if stream['thumbnail'] else ''}"),
         }
-    return {'sound': sound, 'stream': stream}
+    return {'sound': sound, 'sounds': sounds, 'stream': stream}
 
 @app.route('/now_playing/thumbnail')
 def stream_thumbnail():
