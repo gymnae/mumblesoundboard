@@ -179,7 +179,9 @@ side, the thumbnail of the running YouTube stream (BGM). The same information is
 }
 ```
 
-Either entry is `null` when nothing of that kind plays. `GET /now_playing/thumbnail` returns the
+Either entry is `null` when nothing of that kind plays. Sound buttons can overlap, so `now_playing`
+names only the newest; `"playing_sounds": ["airhorn.mp3", "drumroll.wav"]` lists every sound file still
+playing, oldest first. `GET /now_playing/thumbnail` returns the
 current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`), and it takes the same
 `?size=N`. YouTube thumbnails
 are fetched only through `INVIDIOUS_HOST`, with the same credentials and Google-avoiding URL rewrite

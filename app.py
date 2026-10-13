@@ -392,6 +392,14 @@ class AudioEngine:
             stream_alive = any(getattr(p, 'source_type', 'local') == 'remote' for p in alive)
             return sound, self.stream_info if stream_alive else None
 
+    def playing_sounds(self):
+        """Filenames of all sound buttons still playing, oldest first, each listed once."""
+        with self.lock:
+            alive = [p for p in self.active_processes if p.poll() is None]
+            names = [p.tag_filename for p in alive
+                     if getattr(p, 'source_type', 'local') == 'local' and p.tag_filename]
+        return list(dict.fromkeys(names))
+
     def _start_process_internal(self, cmd, capture_stderr=False, source_type='local', tag_filename=None):
         stderr_dest = subprocess.PIPE if capture_stderr else subprocess.DEVNULL
         
@@ -906,6 +914,7 @@ def get_status():
         'playing': is_playing,
         'meta': audio_engine.current_metadata if is_playing else None,
         'now_playing': now_playing_info(),
+        'playing_sounds': audio_engine.playing_sounds(),
         'audio': metrics,
         'meet': meet_status_all(),
         'matrix_rtc': matrix_rtc.status(),
