@@ -160,7 +160,10 @@ The same data is available over plain GET endpoints, alongside `GET /play/<file>
   Missing tags are `null`; `duration` is in seconds.
 - `GET /cover/<file>` — the embedded image (JPEG/PNG/…), or the generic SVG fallback if the file has
   none. The `X-Cover-Source` response header is `embedded` or `default`. Responses carry an ETag and
-  are cacheable for an hour.
+  are cacheable for an hour. Add `?size=N` (16–1024) to get the image scaled to fit N×N pixels, which
+  is useful for clients that store it, such as Bitfocus Companion buttons (`?size=72`). Covers are
+  only scaled down. Opaque covers come back as JPEG and transparent ones as PNG. With a size, the
+  fallback is a PNG of the pixel-art vinyl instead of the SVG.
 
 ### Now playing
 
@@ -177,7 +180,8 @@ side, the thumbnail of the running YouTube stream (BGM). The same information is
 ```
 
 Either entry is `null` when nothing of that kind plays. `GET /now_playing/thumbnail` returns the
-current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`). YouTube thumbnails
+current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`), and it takes the same
+`?size=N`. YouTube thumbnails
 are fetched only through `INVIDIOUS_HOST`, with the same credentials and Google-avoiding URL rewrite
 as the audio, so the browser never contacts YouTube either. Other links played via yt-dlp have no
 thumbnail.

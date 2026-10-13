@@ -3,7 +3,7 @@ import unittest
 
 from PIL import Image
 
-from artwork import render_frame
+from artwork import render_frame, thumbnail
 
 
 def encoded(width, height, color=(200, 50, 120)):
@@ -42,3 +42,30 @@ class RenderFrameTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ThumbnailTests(unittest.TestCase):
+    def test_large_cover_shrinks_to_fit_keeping_aspect(self):
+        mime, data = thumbnail(encoded(1200, 600), 72)
+
+        self.assertEqual(mime, 'image/jpeg')
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (72, 36))
+
+    def test_small_cover_is_not_enlarged(self):
+        _, data = thumbnail(encoded(40, 40), 72)
+
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (40, 40))
+
+    def test_transparent_cover_stays_png(self):
+        buffer = io.BytesIO()
+        Image.new('RGBA', (300, 300), (0, 0, 0, 0)).save(buffer, 'PNG')
+        mime, data = thumbnail(buffer.getvalue(), 64)
+
+        self.assertEqual(mime, 'image/png')
+        self.assertEqual(Image.open(io.BytesIO(data)).mode, 'RGBA')
+
+    def test_missing_or_broken_art_gives_default_at_requested_size(self):
+        for art in (None, b'not an image'):
+            mime, data = thumbnail(art, 96)
+            self.assertEqual(mime, 'image/png')
+            self.assertEqual(Image.open(io.BytesIO(data)).size, (96, 96))

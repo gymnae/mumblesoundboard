@@ -513,7 +513,7 @@ audio_engine = AudioEngine()
 # turn the DJ down in Schnackn (per-person volume) and still hear the sound buttons.
 # Each bot also shows its artwork (cover / video thumbnail) as a camera image.
 from meet_bot import MeetBot
-from artwork import Artwork
+from artwork import Artwork, thumbnail
 
 def sound_artwork():
     name, _ = audio_engine.now_playing()
@@ -809,10 +809,36 @@ def sound_meta(filename):
         return jsonify({'error': 'File not found'}), 404
     return jsonify(info)
 
+COVER_SIZE_RANGE = (16, 1024)
+
+def requested_cover_size():
+    """?size=N on cover endpoints: longest edge in px, clamped. None when absent.
+    Raises ValueError when it is not a number."""
+    raw = request.args.get('size')
+    if not raw:
+        return None
+    low, high = COVER_SIZE_RANGE
+    return min(high, max(low, int(raw)))
+
+def default_cover(size, max_age):
+    """Generic retro cover: the SVG, or a PNG of the pixel art when a size is asked for."""
+    if size:
+        mime, data = thumbnail(None, size)
+        response = send_file(io.BytesIO(data), mimetype=mime, max_age=max_age)
+    else:
+        response = send_from_directory(app.static_folder, 'cover_default.svg', max_age=max_age)
+    response.headers['X-Cover-Source'] = 'default'
+    return response
+
 @app.route('/cover/<path:filename>')
 def cover(filename):
     """Embedded cover art, or the generic retro cover when the file has none.
-    X-Cover-Source tells API clients which one they got."""
+    X-Cover-Source tells API clients which one they got. ?size=N scales it to
+    fit N×N px (covers are only shrunk), for clients that store the image."""
+    try:
+        px = requested_cover_size()
+    except ValueError:
+        return "size must be a number of pixels", 400
     path = resolve_sound(filename)
     if not path:
         return "File not found", 404
@@ -821,14 +847,14 @@ def cover(filename):
     except OSError:
         return "File not found", 404
     if art is None:
-        response = send_from_directory(app.static_folder, 'cover_default.svg', max_age=3600)
-        response.headers['X-Cover-Source'] = 'default'
-        return response
+        return default_cover(px, 3600)
     mime, data, (mtime_ns, size) = art
+    if px:
+        mime, data = thumbnail(data, px)
     response = send_file(
         io.BytesIO(data),
         mimetype=mime,
-        etag=f"{mtime_ns:x}-{size:x}",
+        etag=f"{mtime_ns:x}-{size:x}" + (f"-{px}" if px else ""),
         last_modified=mtime_ns / 1e9,
         max_age=3600,
     )
@@ -907,14 +933,20 @@ def now_playing_info():
 
 @app.route('/now_playing/thumbnail')
 def stream_thumbnail():
-    """Thumbnail of the running web stream, or the generic cover if there is none."""
+    """Thumbnail of the running web stream, or the generic cover if there is none.
+    Takes ?size=N like /cover."""
+    try:
+        px = requested_cover_size()
+    except ValueError:
+        return "size must be a number of pixels", 400
     _, stream = audio_engine.now_playing()
     data = stream and stream['thumbnail']
     if not data:
-        response = send_from_directory(app.static_folder, 'cover_default.svg', max_age=60)
-        response.headers['X-Cover-Source'] = 'default'
-        return response
-    response = send_file(io.BytesIO(data), mimetype=sniff_mime(data), max_age=3600)
+        return default_cover(px, 60)
+    mime = sniff_mime(data)
+    if px:
+        mime, data = thumbnail(data, px)
+    response = send_file(io.BytesIO(data), mimetype=mime, max_age=3600)
     response.headers['X-Cover-Source'] = 'embedded'
     return response
 

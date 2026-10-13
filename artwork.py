@@ -47,6 +47,38 @@ def _open(image_bytes):
     return Image.open(DEFAULT_COVER).convert('RGB'), True
 
 
+def thumbnail(image_bytes, size):
+    """(mime, bytes) scaled to fit a size×size box, for API clients like Companion.
+
+    Real art is only ever scaled down; the pixel-art default cover (used when
+    image_bytes is None or undecodable) is scaled to size with hard edges.
+    Opaque art becomes JPEG, anything with transparency stays PNG.
+    """
+    art = None
+    if image_bytes:
+        try:
+            art = Image.open(io.BytesIO(image_bytes))
+            art.load()
+        except Exception:
+            art = None
+    buffer = io.BytesIO()
+    if art is None:
+        art = Image.open(DEFAULT_COVER).convert('RGB')
+        scale = size / max(art.size)
+        art = art.resize((max(1, round(art.width * scale)), max(1, round(art.height * scale))), Image.NEAREST)
+        art.save(buffer, 'PNG', optimize=True)
+        return 'image/png', buffer.getvalue()
+    art = ImageOps.exif_transpose(art)
+    alpha = art.mode in ('RGBA', 'LA', 'PA') or 'transparency' in art.info
+    art = art.convert('RGBA' if alpha else 'RGB')
+    art.thumbnail((size, size), Image.LANCZOS)
+    if alpha:
+        art.save(buffer, 'PNG', optimize=True)
+        return 'image/png', buffer.getvalue()
+    art.save(buffer, 'JPEG', quality=85, optimize=True)
+    return 'image/jpeg', buffer.getvalue()
+
+
 def _wrap(draw, text, font, width, max_lines):
     words = text.split()
     lines = []
