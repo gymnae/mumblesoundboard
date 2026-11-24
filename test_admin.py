@@ -243,6 +243,50 @@ class AdminApiTests(unittest.TestCase):
         removed = self.client.delete('/admin/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE))
         self.assertFalse(removed.get_json()['sound']['has_cover'])
 
+    def test_cover_crop_and_preview(self):
+        from PIL import Image
+        self.upload(self.audio(440, 'mp3'), 'crop.mp3')
+        image = Image.new('RGB', (400, 200), (255, 0, 0))
+        image.paste((0, 0, 255), (200, 0, 400, 200))  # right half blue
+        buffer = io.BytesIO()
+        image.save(buffer, 'TIFF')  # not a browser format; converted on the server
+        tiff = buffer.getvalue()
+
+        preview = self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE),
+                                   data={'image': (io.BytesIO(tiff), 'c.tif')}, content_type='multipart/form-data')
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.mimetype, 'image/jpeg')
+        self.assertEqual((preview.headers['X-Image-Width'], preview.headers['X-Image-Height']), ('400', '200'))
+
+        put = self.client.put('/admin/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
+                              data={'cover': (io.BytesIO(tiff), 'c.tif'), 'crop': '0.5,0,0.5,1'},
+                              content_type='multipart/form-data')
+        self.assertEqual(put.status_code, 200, put.get_json())
+        from sound_metadata import read_file
+        _, (mime, data) = read_file(os.path.join(self.sounds, 'crop.mp3'))
+        cover = Image.open(io.BytesIO(data))
+        self.assertEqual((mime, cover.size), ('image/jpeg', (200, 200)))
+        r, g, b = cover.convert('RGB').getpixel((100, 100))
+        self.assertTrue(b > 200 and r < 60, (r, g, b))
+
+        bad = self.client.put('/admin/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
+                              data={'cover': (io.BytesIO(tiff), 'c.tif'), 'crop': '0.9,0,0.5,1'},
+                              content_type='multipart/form-data')
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn('inside the image', bad.get_json()['error'])
+        junk = self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE),
+                                data={'image': (io.BytesIO(b'zzz'), 'x.heic')}, content_type='multipart/form-data')
+        self.assertEqual(junk.status_code, 400)
+        self.assertEqual(self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE)).status_code, 400)
+
+    def test_page_offers_many_image_types(self):
+        page = self.client.get('/admin', headers=USER).get_data(as_text=True)
+        self.assertIn('.heic', page)
+        self.assertIn('id="crop-modal"', page)
+        me = self.client.get('/admin/api/me', headers=USER).get_json()
+        self.assertEqual(me['cover']['aspect'], 1.0)
+        self.assertIn('AVIF', me['cover']['formats'])
+
     def test_delete_trash_restore(self):
         self.upload(self.audio(440), 'bye.wav')
         deleted = self.client.delete('/admin/api/sounds/bye.wav', headers=dict(USER, **WRITE))

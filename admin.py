@@ -3,11 +3,13 @@
 Everything under /admin is meant to sit behind a caddy-security authorization
 policy; admin_auth.AdminAuth checks what the proxy passes on.
 """
+import io
 import os
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, send_file
 from werkzeug.exceptions import RequestEntityTooLarge
 
+import cover_image
 import tag_writer
 from library import LibraryError, is_visible_name
 
@@ -46,6 +48,10 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
     def tag_error(e):
         return error(str(e), 400)
 
+    @admin.errorhandler(cover_image.ImageError)
+    def image_error(e):
+        return error(str(e), 400)
+
     @admin.errorhandler(RequestEntityTooLarge)
     def too_large(e):
         return error(f'upload is larger than {max_upload_bytes // (1024 * 1024)} MB', 413)
@@ -55,7 +61,11 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
     def page():
         return render_template('admin.html', user=request.admin_user,
                                max_upload_mb=max_upload_bytes // (1024 * 1024),
-                               extensions=library.extensions())
+                               extensions=library.extensions(),
+                               cover_accept=cover_image.ACCEPT,
+                               cover_max_px=cover_image.COVER_MAX_PX,
+                               cover_max_bytes=cover_image.MAX_INPUT_BYTES,
+                               cover_formats=cover_image.FORMAT_NAMES)
 
     @admin.route('/api/me')
     def me():
@@ -64,6 +74,12 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
             'jwt_verified': auth.verifies_jwt,
             'max_upload_bytes': max_upload_bytes,
             'extensions': list(library.extensions()),
+            'cover': {
+                'aspect': cover_image.COVER_ASPECT,
+                'max_px': cover_image.COVER_MAX_PX,
+                'max_bytes': cover_image.MAX_INPUT_BYTES,
+                'formats': list(cover_image.FORMAT_NAMES),
+            },
             'normalization': {
                 'enabled': library.normalize,
                 'target_lufs': library.target_lufs,
@@ -93,21 +109,35 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
         print(f"[ADMIN] {request.admin_user} edited tags of {name}")
         return jsonify({'sound': sound_info(name)})
 
+    def uploaded_image(field):
+        image = request.files.get(field)
+        if not image:
+            raise cover_image.ImageError(f'no image in the "{field}" form field')
+        return image.read(cover_image.MAX_INPUT_BYTES + 1)
+
+    @admin.route('/api/image-preview', methods=['POST'])
+    def image_preview():
+        """Any supported image as JPEG/PNG the browser can show in the cropper.
+        X-Image-Width/-Height give the size of the upright original."""
+        mime, data, width, height = cover_image.preview(uploaded_image('image'))
+        response = send_file(io.BytesIO(data), mimetype=mime, max_age=0)
+        response.headers['X-Image-Width'] = str(width)
+        response.headers['X-Image-Height'] = str(height)
+        return response
+
     @admin.route('/api/sounds/<path:name>/cover', methods=['PUT', 'POST', 'DELETE'])
     def cover(name):
-        data = None
+        """multipart 'cover' (any supported image) and optional 'crop' = x,y,w,h
+        as fractions of the upright image; the crop is made square."""
+        data = crop = None
         if request.method != 'DELETE':
-            image = request.files.get('cover')
-            if not image:
-                return error('no image in the "cover" form field')
-            data = image.read(tag_writer.MAX_COVER_INPUT_BYTES + 1)
-            if not data:
-                return error('empty image')
+            data = uploaded_image('cover')
+            crop = cover_image.parse_crop(request.form.get('crop'))
         with library.write_lock:
             info, missing = info_or_404(name)
             if missing:
                 return missing
-            tag_writer.write_cover(library.path(name), data)
+            tag_writer.write_cover(library.path(name), data, crop)
             library.file_changed(name)
         action = 'removed the cover of' if data is None else 'set a new cover for'
         print(f"[ADMIN] {request.admin_user} {action} {name}")

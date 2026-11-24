@@ -22,7 +22,7 @@ FORMATS = {
 
 def image_bytes(fmt='PNG', size=(1600, 900), mode='RGB'):
     buffer = io.BytesIO()
-    Image.new(mode, size, (200, 30, 30, 255) if mode == 'RGBA' else (200, 30, 30)).save(buffer, fmt)
+    Image.new(mode, size, (200, 30, 30, 128) if mode == 'RGBA' else (200, 30, 30)).save(buffer, fmt)
     return buffer.getvalue()
 
 

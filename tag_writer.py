@@ -6,7 +6,6 @@ processes still playing the old file keep reading the old inode undisturbed,
 and a failed write never leaves a half-written sound behind.
 """
 import base64
-import io
 import os
 import re
 import shutil
@@ -16,8 +15,7 @@ import mutagen
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TXXX
 from mutagen.mp4 import MP4Cover, MP4FreeForm, MP4Tags
-from PIL import Image, ImageOps
-
+import cover_image
 from sound_metadata import FRONT_COVER, MP4_TAGS_KEY, TAGS_FIELD, normalize_tags
 
 TEXT_FIELDS = ('title', 'artist', 'album', 'year', 'genre')
@@ -28,8 +26,7 @@ ID3_FRAMES = {'title': TIT2, 'artist': TPE1, 'album': TALB, 'year': TDRC, 'genre
 MP4_KEYS = {'title': '\xa9nam', 'artist': '\xa9ART', 'album': '\xa9alb', 'year': '\xa9day', 'genre': '\xa9gen'}
 VORBIS_KEYS = {'title': 'title', 'artist': 'artist', 'album': 'album', 'year': 'date', 'genre': 'genre'}
 
-MAX_COVER_INPUT_BYTES = 15 * 1024 * 1024
-COVER_MAX_PX = 1000
+MAX_COVER_INPUT_BYTES = cover_image.MAX_INPUT_BYTES
 
 
 class TagWriteError(ValueError):
@@ -72,30 +69,12 @@ def validate_fields(data):
     return cleaned
 
 
-def prepare_cover(data):
-    """Validate an uploaded image and shrink it to at most COVER_MAX_PX.
-    Returns (mime, bytes, width, height). Opaque images become JPEG, others PNG."""
-    if not data:
-        raise TagWriteError('empty image')
-    if len(data) > MAX_COVER_INPUT_BYTES:
-        raise TagWriteError('image is larger than 15 MB')
+def prepare_cover(data, crop=None):
+    """Validated, cropped and converted cover: (mime, bytes, width, height)."""
     try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-    except Exception:
-        raise TagWriteError('not a readable image (use JPEG, PNG, GIF or WebP)')
-    image = ImageOps.exif_transpose(image)
-    alpha = image.mode in ('RGBA', 'LA', 'PA') or 'transparency' in image.info
-    image = image.convert('RGBA' if alpha else 'RGB')
-    image.thumbnail((COVER_MAX_PX, COVER_MAX_PX), Image.LANCZOS)
-    buffer = io.BytesIO()
-    if alpha:
-        image.save(buffer, 'PNG', optimize=True)
-        mime = 'image/png'
-    else:
-        image.save(buffer, 'JPEG', quality=90, optimize=True)
-        mime = 'image/jpeg'
-    return mime, buffer.getvalue(), image.width, image.height
+        return cover_image.prepare_cover(data, crop)
+    except cover_image.ImageError as e:
+        raise TagWriteError(str(e))
 
 
 def _open(path):
@@ -230,7 +209,8 @@ def write_fields(path, fields):
     _edit_atomically(path, lambda audio, kind: _apply_fields(audio, kind, fields))
 
 
-def write_cover(path, image_bytes):
-    """Embed image_bytes as the front cover, or remove all pictures when None."""
-    cover = prepare_cover(image_bytes) if image_bytes is not None else None
+def write_cover(path, image_bytes, crop=None):
+    """Embed image_bytes as the front cover, or remove all pictures when None.
+    crop: fractions (x, y, w, h) of the upright image, see cover_image."""
+    cover = prepare_cover(image_bytes, crop) if image_bytes is not None else None
     _edit_atomically(path, lambda audio, kind: _apply_cover(audio, kind, cover))

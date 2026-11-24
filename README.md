@@ -264,9 +264,18 @@ OIDC login. The rest of the soundboard (playing, search, `/meta`, …) stays pub
   fingerprint of the file's *audio packets* (`ffmpeg -c copy -f hash`), not the file bytes. The same
   recording is therefore recognized even when its tags, cover or file name differ. Files added to the
   folder by hand are fingerprinted before the check.
-* **Edit** title, artist, album, year, genre and tags, **set or remove the cover** (images are shrunk
-  to at most 1000 px). Changes are written into the file on a copy that then replaces the original
-  atomically. A sound that is playing is not disturbed, and a failed write leaves the file untouched.
+* **Edit** title, artist, album, year and genre, and **tags**. Changes are written into the file on a
+  copy that then replaces the original atomically. A sound that is playing is not disturbed, and a
+  failed write leaves the file untouched.
+* **Covers:** click a sound's cover (or drop an image on it) and choose the area that becomes the
+  square cover. Drag the square to move it, drag a corner to resize it, or drag outside it to draw a
+  new one. The mouse wheel, `+`/`−` and the arrow keys work too, as does touch. A live preview shows
+  the result. Almost any image works: JPEG, PNG, GIF (first frame), WebP, AVIF, HEIC/HEIF (iPhone
+  photos), TIFF, BMP, ICO, TGA, JPEG 2000, PSD, QOI, PPM and SVG (up to 25 MB). Formats the browser
+  cannot display are previewed through the server, and SVG is rasterized in the browser. The server
+  crops the original, applies the EXIF rotation, converts colour profiles (Display P3, CMYK) to sRGB
+  and shrinks the cover to at most 1000 px, never enlarging it. It is stored as JPEG, or as PNG if it
+  has transparency.
 * **Delete** never erases anything. The file is renamed to
   `<name>.deleted-<UTC time>` (e.g. `airhorn.mp3.deleted-20261124T101500Z`). That name no longer ends
   in an allowed extension, so the soundboard ignores it everywhere, including `/play`. The admin page
@@ -355,8 +364,12 @@ page does. Other websites cannot add it to requests made with the user's login c
   for a duplicate; `413` too large; `415` not an allowed/playable audio file.
 - `PATCH /admin/api/sounds/<file>` — JSON with any of `title`, `artist`, `album`, `year`, `genre`
   (empty string or `null` removes it) and `tags` (list). Returns `{"sound"}`.
-- `PUT /admin/api/sounds/<file>/cover` — multipart field `cover` (JPEG/PNG/GIF/WebP);
-  `DELETE` removes all embedded pictures.
+- `PUT /admin/api/sounds/<file>/cover` — multipart field `cover` (any supported image) and
+  optional `crop=x,y,width,height`: the area as fractions (0–1) of the upright image, e.g.
+  `0.25,0,0.5,1` for the middle square of a 2:1 picture. The area is made square around its centre.
+  Without `crop` the whole image is kept. `DELETE` removes all embedded pictures.
+- `POST /admin/api/image-preview` — multipart field `image`. Returns a JPEG/PNG (at most 1600 px) of
+  any supported image for display, with `X-Image-Width`/`X-Image-Height` of the original.
 - `DELETE /admin/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
 - `GET /admin/api/trash` — deleted sounds; `POST /admin/api/trash/<id>/restore` brings one back
   (`409` if the name is taken again or the same audio was uploaded since).
