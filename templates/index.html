@@ -218,6 +218,43 @@
             margin-top: 4px;
         }
 
+        /* --- TAG SEARCH --- */
+        .tag-cloud {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+            margin: 10px auto 0;
+            max-width: 900px;
+        }
+        .tag-cloud:empty { display: none; }
+        .tag-chip {
+            font-family: inherit;
+            font-size: 11px;
+            font-weight: bold;
+            color: #000080;
+            background: #FFFF99;
+            border: 2px outset #FFFFCC;
+            padding: 2px 6px;
+            cursor: pointer;
+        }
+        .tag-chip:active { border-style: inset; }
+        .tag-chip.on { background: #FF00FF; color: #FFFFFF; border-color: #FF99FF; }
+        .tag-chip small { font-weight: normal; color: #555; }
+        .tag-chip.on small { color: #FFFFFF; }
+        .sound-chips {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 3px;
+            margin-top: 5px;
+            word-break: normal;
+        }
+        .sound-chips .tag-chip { font-size: 9px; padding: 1px 4px; }
+        .search-hint { font-size: 11px; color: #C0C0C0; margin-top: 4px; }
+        .no-results { text-align: center; color: #FFFF00; padding: 20px; }
+        .no-results[hidden] { display: none; }
+
         .play-count { 
             font-size: 9px; 
             color: #555; 
@@ -418,24 +455,31 @@
             <a href="/?sort=pop">[Most Popular]</a>
             <br>
             <a href="/stats">[VIEW STATISTICS]</a>
+            {% if admin_enabled %} | <a href="{{ url_for('admin.page') }}">[EDIT SOUNDS]</a>{% endif %}
             <br><br>
-            <input type="text" id="search-box" class="search-box" placeholder="SEARCH SOUNDS..." onkeyup="filterSounds()">
+            <input type="search" id="search-box" class="search-box" placeholder="SEARCH SOUNDS... or #tag"
+                   value="{{ query }}" oninput="filterSounds()" aria-label="Search sounds by name, tags or #tag">
+            <div class="search-hint">words match names &amp; tags · <b>#tag</b> needs that exact tag · click a tag to toggle it</div>
+            <div class="tag-cloud" id="tag-cloud">{% for t in tags %}<button type="button" class="tag-chip" data-tag="{{ t.tag }}" onclick="toggleTag(this.dataset.tag)">#{{ t.tag }} <small>{{ t.count }}</small></button>{% endfor %}</div>
         </div>
 
         <div class="sound-grid">
             {% for sound in files %}
             {% set tagline = [sound.artist, sound.title]|select|join(' – ') %}
             <div class="sound-btn" data-name="{{ sound.name }}" onclick="playSound(this.dataset.name)"
+                 data-search="{{ search_text(sound) }}" data-tags="{{ sound.tags|join(' ') }}"
                  title="{{ [tagline, sound.album, sound.year]|select|join(' · ') or sound.name }}">
                 <img class="sound-cover{{ '' if sound.has_cover else ' no-cover' }}"
                      src="{{ sound.cover_url if sound.has_cover else url_for('static', filename='cover_default.svg') }}"
                      alt="" loading="lazy" decoding="async" width="120" height="120">
                 <span class="sound-name">💿 {{ sound.name }}</span>
                 {% if tagline %}<span class="sound-tags">{{ tagline }}</span>{% endif %}
+                {% if sound.tags %}<span class="sound-chips">{% for tag in sound.tags %}<button type="button" class="tag-chip" data-tag="{{ tag }}" onclick="event.stopPropagation(); toggleTag(this.dataset.tag)">#{{ tag }}</button>{% endfor %}</span>{% endif %}
                 <span class="play-count">Played: {{ sound.count }}</span>
             </div>
             {% endfor %}
         </div>
+        <div id="no-results" class="no-results" hidden>NO SOUNDS MATCH YOUR SEARCH</div>
     </div>
 
     <div class="control-deck">
@@ -487,14 +531,58 @@
     </div>
 
     <script>
-        function filterSounds() {
-            const query = document.getElementById('search-box').value.toLowerCase();
-            const buttons = document.getElementsByClassName('sound-btn');
-            for (let btn of buttons) {
-                const text = btn.innerText.toLowerCase();
-                btn.style.display = text.includes(query) ? 'flex' : 'none';
-            }
+        // Same syntax as GET /meta?q=: every word must appear in the name or
+        // tags, every #tag must be one of the sound's tags.
+        function normalizeTag(raw) {
+            return raw.replace(/^#+/, '').trim().toLowerCase().split(/\s+/).join('-');
         }
+
+        function parseQuery(query) {
+            const words = [], tags = [];
+            query.toLowerCase().split(/\s+/).filter(Boolean).forEach(token => {
+                if (token.startsWith('#') && token.length > 1) tags.push(normalizeTag(token));
+                else words.push(token);
+            });
+            return { words, tags };
+        }
+
+        function filterSounds() {
+            const box = document.getElementById('search-box');
+            const { words, tags } = parseQuery(box.value);
+            let shown = 0;
+            for (const btn of document.getElementsByClassName('sound-btn')) {
+                const text = btn.dataset.search;
+                const own = btn.dataset.tags ? btn.dataset.tags.split(' ') : [];
+                const match = words.every(w => text.includes(w)) && tags.every(t => own.includes(t));
+                btn.style.display = match ? 'flex' : 'none';
+                if (match) shown++;
+            }
+            document.getElementById('no-results').hidden = shown > 0;
+            document.querySelectorAll('.tag-chip').forEach(chip =>
+                chip.classList.toggle('on', tags.includes(chip.dataset.tag)));
+            // Keep ?q= in the address so a search can be bookmarked or shared
+            const url = new URL(location.href);
+            if (box.value.trim()) url.searchParams.set('q', box.value.trim());
+            else url.searchParams.delete('q');
+            history.replaceState(null, '', url);
+        }
+
+        function toggleTag(tag) {
+            const box = document.getElementById('search-box');
+            const tokens = box.value.split(/\s+/).filter(Boolean);
+            const rest = tokens.filter(t => !(t.startsWith('#') && normalizeTag(t) === tag));
+            box.value = (rest.length === tokens.length ? [...tokens, '#' + tag] : rest).join(' ');
+            filterSounds();
+        }
+
+        // Sort links keep the current search
+        document.querySelectorAll('.toolbar a[href^="/?sort="]').forEach(link => {
+            link.addEventListener('click', () => {
+                const q = document.getElementById('search-box').value.trim();
+                if (q) link.href += '&q=' + encodeURIComponent(q);
+            });
+        });
+        if (document.getElementById('search-box').value) filterSounds();
 
         function playSound(name) {
             // No await here - fire and forget allows for spamming

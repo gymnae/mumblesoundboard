@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>~Soundboard 98~ EDIT</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            background: #000000;
+            color: #00FF00;
+            font-family: "Courier New", Courier, monospace;
+            margin: 0;
+        }
+        a { color: #FFFF00; }
+        h1 { text-align: center; text-shadow: 2px 2px #FF0000; margin: 10px 0; }
+        h2 { font-size: 16px; margin: 0 0 10px; color: #FFFF00; }
+        .container { max-width: 1680px; margin: 0 auto; padding: 10px clamp(10px, 2vw, 24px) 40px; }
+
+        .bar {
+            border: 2px solid #00FF00;
+            background: #000080;
+            padding: 8px 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 20px;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        .bar b { color: #FFFFFF; }
+
+        .panel {
+            border: 2px solid #333;
+            background: #111;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        /* --- UPLOAD --- */
+        .dropzone {
+            display: block;
+            border: 3px dashed #00FF00;
+            background: #001100;
+            padding: 24px 12px;
+            text-align: center;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .dropzone.over { background: #003300; border-color: #FFFF00; color: #FFFF00; }
+        .dropzone input { display: none; }
+        .dropzone small { display: block; font-weight: normal; color: #C0C0C0; margin-top: 6px; }
+        .upload-log { list-style: none; margin: 10px 0 0; padding: 0; font-size: 12px; }
+        .upload-log li { padding: 2px 0; word-break: break-word; }
+        .ok { color: #00FF00; }
+        .warn { color: #FFFF00; }
+        .err { color: #FF5555; }
+        .busy { color: #00FFFF; }
+
+        /* --- LIBRARY --- */
+        .tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; font-size: 12px; }
+        .input-retro {
+            border: 2px inset #FFFFFF;
+            background: #FFFFFF;
+            color: #000000;
+            padding: 3px 5px;
+            font-family: inherit;
+            font-size: 12px;
+            box-sizing: border-box;
+            min-width: 0;
+        }
+        .tools .input-retro { width: min(100%, 360px); min-height: 30px; }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+            gap: 12px;
+        }
+        .card {
+            background: #C0C0C0;
+            color: #000000;
+            border-top: 2px solid #FFFFFF;
+            border-left: 2px solid #FFFFFF;
+            border-right: 2px solid #000000;
+            border-bottom: 2px solid #000000;
+            padding: 8px;
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            gap: 8px;
+            font-size: 12px;
+        }
+        .card.dirty { outline: 3px solid #FF00FF; }
+        .card[hidden] { display: none; }
+        .cover-btn {
+            padding: 0;
+            border: none;
+            background: none;
+            cursor: pointer;
+            position: relative;
+            align-self: start;
+        }
+        .cover-btn img {
+            width: 96px;
+            height: 96px;
+            object-fit: cover;
+            background: #000080;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            box-sizing: border-box;
+            display: block;
+        }
+        .cover-btn img.no-cover { image-rendering: pixelated; }
+        .cover-btn span {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 128, 0.85);
+            color: #FFFFFF;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 2px 0;
+        }
+        .card-head { font-weight: bold; word-break: break-all; }
+        .card-loud { font-size: 10px; color: #000080; margin-top: 2px; }
+        .fields { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr; gap: 4px 6px; align-items: center; }
+        .fields label { font-size: 10px; font-weight: bold; text-align: right; }
+        .fields .input-retro { width: 100%; }
+        .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
+        .actions button, .trash button {
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 11px;
+            padding: 4px 8px;
+            cursor: pointer;
+            background: #C0C0C0;
+            border: 2px outset #FFFFFF;
+        }
+        .actions button:active, .trash button:active { border-style: inset; }
+        .actions .save { background: #008000; color: #FFFFFF; border-color: #80FF80; }
+        .actions .delete { background: #FF0000; color: #FFFFFF; border-color: #FFCCCC; margin-left: auto; }
+        .actions button:disabled { opacity: 0.5; cursor: default; }
+        .card-msg { grid-column: 1 / -1; font-size: 11px; font-weight: bold; min-height: 13px; word-break: break-word; }
+        .card-msg.ok { color: #006000; }
+        .card-msg.err { color: #C00000; }
+        .card-msg.busy { color: #806000; }
+
+        /* --- TRASH --- */
+        .trash { list-style: none; padding: 0; margin: 0; font-size: 12px; }
+        .trash li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 4px 0; border-bottom: 1px dotted #333; }
+        .trash li span { word-break: break-all; }
+        .trash small { color: #808080; }
+        .empty { color: #808080; font-size: 12px; }
+
+        .cover-btn.drop-over img { outline: 3px dashed #FF00FF; outline-offset: -3px; }
+
+        /* --- COVER CROPPER --- */
+        .crop-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: clamp(6px, 3vw, 20px);
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.85);
+        }
+        .crop-modal[hidden] { display: none; }
+        .crop-panel {
+            border: 2px solid #00FF00;
+            background: #004080;
+            padding: clamp(8px, 2vw, 14px);
+            width: min(900px, 100%);
+            max-height: calc(100dvh - 12px);
+            overflow-y: auto;
+            box-sizing: border-box;
+            box-shadow: 8px 8px 0 #000;
+        }
+        .crop-panel h2 { margin-bottom: 2px; }
+        .crop-name { font-size: 12px; color: #FFFFFF; word-break: break-all; margin-bottom: 8px; }
+        .crop-body { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: center; }
+        .crop-stage {
+            position: relative;
+            display: inline-block;
+            line-height: 0;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            background: repeating-conic-gradient(#808080 0 25%, #C0C0C0 0 50%) 0 0 / 16px 16px;
+            border: 2px inset #FFFFFF;
+            cursor: crosshair;
+            outline: none;
+        }
+        .crop-stage:focus-visible { border-color: #FFFF00; }
+        .crop-stage img {
+            display: block;
+            max-width: min(620px, calc(100vw - 60px));
+            max-height: min(60vh, 560px);
+            pointer-events: none;
+        }
+        .crop-stage.loading img { visibility: hidden; }
+        .crop-box {
+            position: absolute;
+            box-sizing: border-box;
+            border: 2px dashed #FFFF00;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+            cursor: move;
+            /* rule-of-thirds guides */
+            background:
+                linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255,255,255,0.5) 0 calc(33.33% + 0.5px), transparent 0 calc(66.66% - 0.5px), rgba(255,255,255,0.5) 0 calc(66.66% + 0.5px), transparent 0),
+                linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255,255,255,0.5) 0 calc(33.33% + 0.5px), transparent 0 calc(66.66% - 0.5px), rgba(255,255,255,0.5) 0 calc(66.66% + 0.5px), transparent 0);
+        }
+        .crop-stage.loading .crop-box { display: none; }
+        .crop-handle {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: #FFFF00;
+            border: 2px solid #000;
+            box-sizing: border-box;
+        }
+        .crop-handle[data-corner="nw"] { left: -8px; top: -8px; cursor: nwse-resize; }
+        .crop-handle[data-corner="ne"] { right: -8px; top: -8px; cursor: nesw-resize; }
+        .crop-handle[data-corner="sw"] { left: -8px; bottom: -8px; cursor: nesw-resize; }
+        .crop-handle[data-corner="se"] { right: -8px; bottom: -8px; cursor: nwse-resize; }
+        @media (pointer: coarse) {
+            .crop-handle { width: 26px; height: 26px; }
+            .crop-handle[data-corner="nw"] { left: -13px; top: -13px; }
+            .crop-handle[data-corner="ne"] { right: -13px; top: -13px; }
+            .crop-handle[data-corner="sw"] { left: -13px; bottom: -13px; }
+            .crop-handle[data-corner="se"] { right: -13px; bottom: -13px; }
+        }
+        .crop-side { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 180px; font-size: 11px; }
+        .crop-side canvas {
+            width: 160px;
+            height: 160px;
+            background: #000080;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+        }
+        .crop-side label { display: flex; flex-direction: column; align-items: center; gap: 2px; font-weight: bold; width: 100%; }
+        .crop-side input[type="range"] { width: 100%; }
+        .crop-info { text-align: center; color: #FFFFFF; min-height: 26px; }
+        .crop-info .warn { color: #FFFF00; font-weight: bold; }
+        .crop-panel button {
+            font-family: inherit;
+            font-weight: bold;
+            padding: 6px 12px;
+            cursor: pointer;
+            background: #C0C0C0;
+            border: 2px outset #FFFFFF;
+        }
+        .crop-panel button:active { border-style: inset; }
+        .crop-panel button:disabled { opacity: 0.5; cursor: default; }
+        .crop-actions { display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+        .crop-actions .save { background: #008000; color: #FFFFFF; border-color: #80FF80; }
+        .crop-msg { text-align: center; font-weight: bold; font-size: 12px; min-height: 15px; margin-top: 8px; }
+        .crop-hint { font-size: 10px; color: #C0C0C0; text-align: center; margin: 8px 0 0; }
+
+        @media (max-width: 600px) {
+            .actions button { min-height: 40px; flex: 1 1 auto; }
+            .crop-side { width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: center; }
+            .crop-side canvas { width: 96px; height: 96px; }
+            .crop-side label { width: auto; flex: 1 1 140px; }
+            .crop-actions button { flex: 1 1 auto; min-height: 44px; }
+            .actions .delete { margin-left: 0; }
+            .tools .input-retro { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <marquee scrollamount="8"><b style="color:#FF00FF">*** SYSOP ACCESS GRANTED *** UPLOAD · TAG · COVER · DELETE ***</b></marquee>
+
+    <div class="container">
+        <h1>Soundboard 2000 · Edit</h1>
+
+        <div class="bar">
+            <span>👤 signed in as <b>{{ user }}</b></span>
+            <a href="{{ url_for('index') }}">[BACK TO SOUNDBOARD]</a>
+        </div>
+
+        <section class="panel">
+            <h2>📼 UPLOAD SOUNDS</h2>
+            <label class="dropzone" id="dropzone">
+                DROP FILES HERE OR CLICK TO CHOOSE
+                <input type="file" id="upload-input" multiple
+                       accept="{% for ext in extensions %}.{{ ext }},{% endfor %}audio/*">
+                <small>{{ extensions|join(', ')|upper }} · max {{ max_upload_mb }} MB each · the same audio is never stored twice</small>
+            </label>
+            <ul class="upload-log" id="upload-log"></ul>
+        </section>
+
+        <section class="panel">
+            <h2>💿 LIBRARY</h2>
+            <div class="tools">
+                <input type="search" id="filter" class="input-retro" placeholder="FILTER... or #tag" aria-label="Filter sounds" oninput="applyFilter()">
+                <span id="count"></span>
+                <span id="norm-info"></span>
+            </div>
+            <div class="cards" id="cards"><span class="empty">LOADING...</span></div>
+        </section>
+
+        <section class="panel">
+            <h2>🗑️ DELETED SOUNDS</h2>
+            <p class="empty" style="margin-top:0">Deleting only renames a file (<code>name.deleted-&lt;time&gt;</code>) so the soundboard ignores it. Nothing is erased: restore it here, or remove it from the disk yourself.</p>
+            <ul class="trash" id="trash"></ul>
+        </section>
+    </div>
+
+    <input type="file" id="cover-input" accept="{{ cover_accept }}" hidden>
+
+    <div id="crop-modal" class="crop-modal" hidden>
+        <div class="crop-panel" role="dialog" aria-modal="true" aria-labelledby="crop-title">
+            <h2 id="crop-title">✂️ CHOOSE THE COVER AREA</h2>
+            <div class="crop-name" id="crop-name"></div>
+            <div class="crop-body">
+                <div class="crop-stage loading" id="crop-stage" tabindex="0"
+                     aria-label="Cover area. Arrow keys move it, plus and minus resize it, Enter saves.">
+                    <img id="crop-img" alt="" draggable="false">
+                    <div class="crop-box" id="crop-box">
+                        <span class="crop-handle" data-corner="nw"></span>
+                        <span class="crop-handle" data-corner="ne"></span>
+                        <span class="crop-handle" data-corner="sw"></span>
+                        <span class="crop-handle" data-corner="se"></span>
+                    </div>
+                </div>
+                <div class="crop-side">
+                    <canvas id="crop-preview" width="320" height="320" aria-label="Preview of the new cover"></canvas>
+                    <div class="crop-info" id="crop-info"></div>
+                    <label>AREA SIZE <input type="range" id="crop-size" min="0" max="1000" value="1000"></label>
+                    <button type="button" id="crop-fit">⤢ LARGEST SQUARE</button>
+                </div>
+            </div>
+            <div class="crop-msg" id="crop-msg"></div>
+            <div class="crop-actions">
+                <button type="button" class="save" id="crop-save" disabled>💾 SAVE COVER</button>
+                <button type="button" id="crop-other">📂 OTHER IMAGE</button>
+                <button type="button" id="crop-cancel">CANCEL</button>
+            </div>
+            <p class="crop-hint">Drag the square to move it · drag a corner to resize · drag outside it to draw a new one ·
+                mouse wheel or + / − resizes · arrow keys move · Enter saves</p>
+        </div>
+    </div>
+
+    <script>
+        const API = {{ api_base|tojson }};
+        const FIELDS = [['title', 'TITLE'], ['artist', 'ARTIST'], ['album', 'ALBUM'], ['year', 'YEAR'], ['genre', 'GENRE'], ['tags', 'TAGS']];
+        const coverVersion = {};   // name -> cache buster after a cover change
+        let sounds = [];
+
+        // --- helpers ---------------------------------------------------------
+        function el(tag, props = {}, ...children) {
+            const node = document.createElement(tag);
+            Object.entries(props).forEach(([key, value]) => {
+                if (key === 'class') node.className = value;
+                else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+                else if (key in node) node[key] = value;
+                else node.setAttribute(key, value);
+            });
+            children.flat(Infinity).forEach(child => node.append(child));
+            return node;
+        }
+
+        // Every state-changing call carries the header admin_auth requires.
+        async function api(method, url, body) {
+            const options = { method, headers: { 'X-Soundboard-Admin': '1' }, credentials: 'same-origin' };
+            if (body instanceof FormData) options.body = body;
+            else if (body !== undefined) {
+                options.body = JSON.stringify(body);
+                options.headers['Content-Type'] = 'application/json';
+            }
+            let response;
+            try {
+                response = await fetch(url, options);
+            } catch (e) {
+                throw new Error('SOUNDBOARD UNREACHABLE');
+            }
+            const type = response.headers.get('Content-Type') || '';
+            if (!type.includes('application/json')) {
+                // Caddy answers an expired login with its sign-in page
+                throw new Error(response.redirected || response.status === 401
+                    ? 'SESSION EXPIRED – RELOAD THE PAGE TO SIGN IN AGAIN' : `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                const error = new Error(data.error || `HTTP ${response.status}`);
+                error.data = data;
+                throw error;
+            }
+            return data;
+        }
+
+        function formatLoudness(loud) {
+            if (!loud) return '';
+            switch (loud.status) {
+                case 'analyzed': {
+                    const gain = loud.gain_db > 0 ? '+' + loud.gain_db.toFixed(1) : loud.gain_db.toFixed(1);
+                    return `🔊 ${loud.lufs.toFixed(1)} LUFS · peak ${loud.true_peak === null ? '?' : loud.true_peak.toFixed(1)} dBTP · plays at ${gain} dB${loud.limiter ? ' + limiter' : ''}`;
+                }
+                case 'silent': return '🔇 silent – played unchanged';
+                case 'pending': return '⏳ loudness analysis pending – plays unchanged until done';
+                case 'failed': return '⚠️ loudness analysis failed – plays unchanged';
+                case 'unreadable': return '⚠️ ffmpeg cannot read this file';
+            }
+            return '';
+        }
+
+        function normalizeTag(raw) {
+            return raw.replace(/^#+/, '').trim().toLowerCase().split(/\s+/).join('-');
+        }
+
+        // --- library cards ---------------------------------------------------
+        function coverSrc(sound) {
+            const v = coverVersion[sound.name];
+            return sound.cover_url + '?size=192' + (v ? '&v=' + v : '');
+        }
+
+        function buildCard(sound) {
+            const msg = el('div', { class: 'card-msg' });
+            const img = el('img', { alt: '', width: 96, height: 96, loading: 'lazy', src: coverSrc(sound) });
+            img.classList.toggle('no-cover', !sound.has_cover);
+            const inputs = {};
+            const fieldRows = FIELDS.map(([key, label]) => {
+                const id = 'f-' + key + '-' + Math.random().toString(36).slice(2);
+                const value = key === 'tags' ? (sound.tags || []).join(', ') : (sound[key] || '');
+                inputs[key] = el('input', {
+                    id, class: 'input-retro', value, autocomplete: 'off', spellcheck: false,
+                    placeholder: key === 'tags' ? 'airhorn, meme, loud' : key === 'year' ? '1998' : '',
+                    oninput: () => card.classList.add('dirty'),
+                    onkeydown: e => { if (e.key === 'Enter') save(); },
+                });
+                return [el('label', { htmlFor: id }, label), inputs[key]];
+            });
+
+            const saveBtn = el('button', { type: 'button', class: 'save', onclick: () => save() }, '💾 SAVE');
+            const card = el('div', { class: 'card' },
+                el('button', {
+                    type: 'button', class: 'cover-btn', title: 'Click or drop an image to choose a new cover',
+                    onclick: () => chooseCover(sound.name),
+                    ondragover: e => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); },
+                    ondragleave: e => e.currentTarget.classList.remove('drop-over'),
+                    ondrop: e => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove('drop-over');
+                        const file = e.dataTransfer.files[0];
+                        if (file) openCropper(sound.name, file);
+                    },
+                }, img, el('span', {}, 'NEW COVER')),
+                el('div', {},
+                    el('div', { class: 'card-head' }, '💿 ' + sound.name),
+                    el('div', { class: 'card-loud' }, formatLoudness(sound.loudness)),
+                    el('div', { class: 'card-loud' }, `${sound.duration ? sound.duration.toFixed(1) + ' s · ' : ''}played ${sound.count}×`)),
+                el('div', { class: 'fields' }, fieldRows),
+                el('div', { class: 'actions' },
+                    saveBtn,
+                    el('button', { type: 'button', title: 'Play in the channel', onclick: () => fetch(sound.play_url) }, '▶ PLAY'),
+                    el('button', { type: 'button', disabled: !sound.has_cover, onclick: () => removeCover(sound.name) }, '✖ COVER'),
+                    el('button', { type: 'button', class: 'delete', onclick: () => remove(sound.name) }, '🗑 DELETE')),
+                msg);
+            card.dataset.name = sound.name;
+            card.dataset.search = [sound.name, sound.title, sound.artist, sound.album, sound.genre, sound.year, ...(sound.tags || [])]
+                .filter(Boolean).join(' ').toLowerCase();
+            card.dataset.tags = (sound.tags || []).join(' ');
+
+            function say(text, cls) {
+                msg.textContent = text;
+                msg.className = 'card-msg' + (cls ? ' ' + cls : '');
+            }
+            card.say = say;
+
+            async function save() {
+                const body = {};
+                FIELDS.forEach(([key]) => {
+                    const value = inputs[key].value.trim();
+                    body[key] = key === 'tags' ? value.split(/[,;]/).map(t => t.trim()).filter(Boolean) : value;
+                });
+                saveBtn.disabled = true;
+                say('SAVING...', 'busy');
+                try {
+                    const data = await api('PATCH', API + 'sounds/' + encodeURIComponent(sound.name), body);
+                    replaceSound(data.sound, 'SAVED ✔');
+                } catch (e) {
+                    say('ERROR: ' + e.message, 'err');
+                    saveBtn.disabled = false;
+                }
+            }
+            return card;
+        }
+
+        function cardOf(name) {
+            return [...document.querySelectorAll('.card')].find(card => card.dataset.name === name);
+        }
+
+        function replaceSound(sound, message) {
+            const index = sounds.findIndex(s => s.name === sound.name);
+            if (index >= 0) sounds[index] = sound; else sounds.push(sound);
+            const old = cardOf(sound.name);
+            const fresh = buildCard(sound);
+            if (old) old.replaceWith(fresh); else document.getElementById('cards').prepend(fresh);
+            if (message) fresh.say(message, 'ok');
+            applyFilter();
+        }
+
+        function renderCards() {
+            const box = document.getElementById('cards');
+            box.replaceChildren(...sounds.map(buildCard));
+            if (!sounds.length) box.append(el('span', { class: 'empty' }, 'NO SOUNDS YET – UPLOAD SOME ABOVE'));
+            applyFilter();
+        }
+
+        function applyFilter() {
+            const tokens = document.getElementById('filter').value.toLowerCase().split(/\s+/).filter(Boolean);
+            const words = tokens.filter(t => !(t.startsWith('#') && t.length > 1));
+            const tags = tokens.filter(t => t.startsWith('#') && t.length > 1).map(normalizeTag);
+            let shown = 0;
+            document.querySelectorAll('.card').forEach(card => {
+                const own = card.dataset.tags ? card.dataset.tags.split(' ') : [];
+                card.hidden = !(words.every(w => card.dataset.search.includes(w)) && tags.every(t => own.includes(t)));
+                if (!card.hidden) shown++;
+            });
+            document.getElementById('count').textContent = `${shown} / ${sounds.length} SOUNDS`;
+        }
+
+        async function loadSounds() {
+            try {
+                const response = await fetch('/meta');
+                sounds = await response.json();
+                renderCards();
+            } catch (e) {
+                document.getElementById('cards').replaceChildren(el('span', { class: 'err' }, 'COULD NOT LOAD SOUNDS'));
+            }
+        }
+
+        // --- covers ----------------------------------------------------------
+        // Choosing an image opens the cropper: the user picks the square that
+        // becomes the cover. The original file is sent along with that square
+        // (as fractions of the image), and the server crops, converts and
+        // shrinks it, so any format it can read works, not only what the
+        // browser can display.
+        const COVER_MAX_PX = {{ cover_max_px }};
+        const COVER_MAX_BYTES = {{ cover_max_bytes }};
+        let coverTarget = null;
+
+        function chooseCover(name) {
+            coverTarget = name;
+            const input = document.getElementById('cover-input');
+            input.value = '';
+            input.click();
+        }
+
+        document.getElementById('cover-input').addEventListener('change', event => {
+            const file = event.target.files[0];
+            if (file && coverTarget) openCropper(coverTarget, file);
+        });
+
+        const crop = {
+            name: null, upload: null, url: null,
+            W: 0, H: 0,          // pixels of the displayed image
+            origW: 0, origH: 0,  // pixels of the original (the preview may be smaller)
+            x: 0, y: 0, size: 0, // the square, in displayed pixels
+            drag: null, trigger: null, frame: 0,
+        };
+        const $ = id => document.getElementById(id);
+
+        function cropSay(text, cls) {
+            const msg = $('crop-msg');
+            msg.textContent = text || '';
+            msg.className = 'crop-msg' + (cls ? ' ' + cls : '');
+        }
+
+        function loadImage(img, url) {
+            return new Promise((resolve, reject) => {
+                img.onload = () => img.naturalWidth ? resolve(img) : reject(new Error('empty image'));
+                img.onerror = () => reject(new Error('the browser cannot show this image'));
+                img.src = url;
+            });
+        }
+
+        async function browserCanShow(file) {
+            const url = URL.createObjectURL(file);
+            try {
+                await loadImage(new Image(), url);
+                return true;
+            } catch (e) {
+                return false;
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        // SVG is vector art the server cannot read: draw it here as a PNG.
+        async function rasterizeSvg(file) {
+            const url = URL.createObjectURL(file);
+            try {
+                const svg = await loadImage(new Image(), url);
+                const w = svg.naturalWidth || 1000, h = svg.naturalHeight || 1000;
+                const scale = 1600 / Math.max(w, h);
+                const canvas = el('canvas', { width: Math.round(w * scale), height: Math.round(h * scale) });
+                canvas.getContext('2d').drawImage(svg, 0, 0, canvas.width, canvas.height);
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                if (!blob) throw new Error('could not convert the SVG');
+                return new File([blob], file.name.replace(/\.svgz?$/i, '') + '.png', { type: 'image/png' });
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        // What to show in the cropper and what to upload: the file itself when
+        // the browser can display it, else a preview converted by the server
+        // (HEIC in Chrome, TIFF, PSD, ...) while the original is uploaded.
+        async function prepareImage(file) {
+            if (file.type === 'image/svg+xml' || /\.svgz?$/i.test(file.name)) {
+                const png = await rasterizeSvg(file);
+                return { show: png, upload: png, size: null };
+            }
+            if (await browserCanShow(file)) return { show: file, upload: file, size: null };
+            cropSay('CONVERTING ' + (file.name.split('.').pop() || '').toUpperCase() + ' FOR PREVIEW...', 'busy');
+            const form = new FormData();
+            form.append('image', file);
+            let response;
+            try {
+                response = await fetch(API + 'image-preview', {
+                    method: 'POST', body: form, credentials: 'same-origin', headers: { 'X-Soundboard-Admin': '1' },
+                });
+            } catch (e) {
+                throw new Error('SOUNDBOARD UNREACHABLE');
+            }
+            const type = response.headers.get('Content-Type') || '';
+            if (type.includes('application/json')) throw new Error((await response.json()).error);
+            if (!response.ok || !type.startsWith('image/')) {
+                throw new Error(response.redirected ? 'SESSION EXPIRED – RELOAD THE PAGE' : `HTTP ${response.status}`);
+            }
+            return {
+                show: await response.blob(), upload: file,
+                size: [+response.headers.get('X-Image-Width'), +response.headers.get('X-Image-Height')],
+            };
+        }
+
+        async function openCropper(name, file) {
+            const modal = $('crop-modal');
+            if (modal.hidden) crop.trigger = document.activeElement;
+            crop.name = name;
+            crop.upload = null;
+            $('crop-name').textContent = '💿 ' + name + '  ←  🖼 ' + file.name;
+            $('crop-stage').classList.add('loading');
+            $('crop-save').disabled = true;
+            $('crop-info').textContent = '';
+            clearPreview();
+            modal.hidden = false;
+            document.body.style.overflow = 'hidden';
+            $('crop-cancel').focus();
+            if (file.size > COVER_MAX_BYTES) {
+                cropSay(`ERROR: image is larger than ${COVER_MAX_BYTES / 1048576} MB`, 'err');
+                return;
+            }
+            cropSay('LOADING IMAGE...', 'busy');
+            try {
+                const prepared = await prepareImage(file);
+                if (crop.url) URL.revokeObjectURL(crop.url);
+                crop.url = URL.createObjectURL(prepared.show);
+                const img = await loadImage($('crop-img'), crop.url);
+                crop.W = img.naturalWidth;
+                crop.H = img.naturalHeight;
+                [crop.origW, crop.origH] = prepared.size || [crop.W, crop.H];
+                crop.upload = prepared.upload;
+                $('crop-stage').classList.remove('loading');
+                largestSquare();
+                $('crop-save').disabled = false;
+                cropSay('');
+                $('crop-stage').focus();
+            } catch (e) {
+                cropSay('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        function closeCropper() {
+            $('crop-modal').hidden = true;
+            document.body.style.overflow = '';
+            $('crop-img').removeAttribute('src');
+            if (crop.url) URL.revokeObjectURL(crop.url);
+            crop.url = crop.upload = crop.drag = null;
+            if (crop.trigger) crop.trigger.focus();
+        }
+
+        // --- the square ---
+        const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+        const minSize = () => Math.min(16 * crop.W / crop.origW || 16, crop.W, crop.H);
+        const maxSize = () => Math.min(crop.W, crop.H);
+
+        function setSquare(x, y, size) {
+            crop.size = clamp(size, minSize(), maxSize());
+            crop.x = clamp(x, 0, crop.W - crop.size);
+            crop.y = clamp(y, 0, crop.H - crop.size);
+            render();
+        }
+
+        function largestSquare() {
+            const size = maxSize();
+            setSquare((crop.W - size) / 2, (crop.H - size) / 2, size);
+        }
+
+        function resizeAroundCenter(size) {
+            const cx = crop.x + crop.size / 2, cy = crop.y + crop.size / 2;
+            size = clamp(size, minSize(), maxSize());
+            setSquare(cx - size / 2, cy - size / 2, size);
+        }
+
+        function render() {
+            const img = $('crop-img');
+            const scale = img.clientWidth / crop.W;
+            const box = $('crop-box');
+            box.style.left = crop.x * scale + 'px';
+            box.style.top = crop.y * scale + 'px';
+            box.style.width = box.style.height = crop.size * scale + 'px';
+
+            const range = maxSize() - minSize();
+            $('crop-size').value = range > 0 ? Math.round((crop.size - minSize()) / range * 1000) : 1000;
+
+            const source = Math.round(crop.size * crop.origW / crop.W);
+            const result = Math.min(source, COVER_MAX_PX);
+            const info = $('crop-info');
+            info.replaceChildren(`AREA ${source}×${source} px of ${crop.origW}×${crop.origH}`, el('br'),
+                                 `COVER ${result}×${result} px`);
+            if (source < 300) {
+                info.append(el('br'), el('span', { class: 'warn' }, '⚠ SMALL AREA – MAY LOOK BLURRY'));
+            }
+
+            cancelAnimationFrame(crop.frame);
+            crop.frame = requestAnimationFrame(() => {
+                const canvas = $('crop-preview');
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingQuality = 'high';
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, crop.x, crop.y, crop.size, crop.size, 0, 0, canvas.width, canvas.height);
+            });
+        }
+
+        function clearPreview() {
+            const canvas = $('crop-preview');
+            canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function pointerPos(event) {
+            const rect = $('crop-img').getBoundingClientRect();
+            return {
+                x: clamp((event.clientX - rect.left) * crop.W / rect.width, 0, crop.W),
+                y: clamp((event.clientY - rect.top) * crop.H / rect.height, 0, crop.H),
+            };
+        }
+
+        // Resize/draw keeps the anchor corner fixed and grows towards the pointer.
+        function squareFromAnchor(ax, ay, px, py, dirX, dirY) {
+            let size = Math.max((px - ax) * dirX, (py - ay) * dirY);
+            const room = Math.min(dirX > 0 ? crop.W - ax : ax, dirY > 0 ? crop.H - ay : ay);
+            size = clamp(size, minSize(), Math.max(room, minSize()));
+            setSquare(dirX > 0 ? ax : ax - size, dirY > 0 ? ay : ay - size, size);
+        }
+
+        const stage = $('crop-stage');
+        stage.addEventListener('pointerdown', event => {
+            if (!crop.upload || event.button > 0) return;
+            event.preventDefault();
+            stage.focus();
+            const p = pointerPos(event);
+            const corner = event.target.dataset && event.target.dataset.corner;
+            if (corner) {
+                const dirX = corner.includes('e') ? 1 : -1, dirY = corner.includes('s') ? 1 : -1;
+                crop.drag = {
+                    mode: 'resize', dirX, dirY,
+                    ax: dirX > 0 ? crop.x : crop.x + crop.size,
+                    ay: dirY > 0 ? crop.y : crop.y + crop.size,
+                };
+            } else if (event.target.closest('#crop-box')) {
+                crop.drag = { mode: 'move', dx: p.x - crop.x, dy: p.y - crop.y };
+            } else {
+                crop.drag = { mode: 'draw', ax: p.x, ay: p.y };
+            }
+            stage.setPointerCapture(event.pointerId);
+        });
+        stage.addEventListener('pointermove', event => {
+            const drag = crop.drag;
+            if (!drag) return;
+            const p = pointerPos(event);
+            if (drag.mode === 'move') setSquare(p.x - drag.dx, p.y - drag.dy, crop.size);
+            else if (drag.mode === 'resize') squareFromAnchor(drag.ax, drag.ay, p.x, p.y, drag.dirX, drag.dirY);
+            else squareFromAnchor(drag.ax, drag.ay, p.x, p.y, p.x >= drag.ax ? 1 : -1, p.y >= drag.ay ? 1 : -1);
+        });
+        ['pointerup', 'pointercancel'].forEach(type => stage.addEventListener(type, () => { crop.drag = null; }));
+        stage.addEventListener('wheel', event => {
+            if (!crop.upload) return;
+            event.preventDefault();
+            resizeAroundCenter(crop.size * (event.deltaY < 0 ? 0.95 : 1.05));
+        }, { passive: false });
+        stage.addEventListener('keydown', event => {
+            if (!crop.upload) return;
+            const step = Math.max(1, crop.size * (event.shiftKey ? 0.2 : 0.05));
+            const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+            if (moves[event.key]) {
+                setSquare(crop.x + moves[event.key][0], crop.y + moves[event.key][1], crop.size);
+            } else if (event.key === '+' || event.key === '=') {
+                resizeAroundCenter(crop.size * 1.05);
+            } else if (event.key === '-' || event.key === '_') {
+                resizeAroundCenter(crop.size / 1.05);
+            } else if (event.key === 'Enter') {
+                saveCrop();
+            } else {
+                return;
+            }
+            event.preventDefault();
+        });
+        new ResizeObserver(() => { if (crop.upload) render(); }).observe($('crop-img'));
+
+        $('crop-size').addEventListener('input', event => {
+            if (crop.upload) resizeAroundCenter(minSize() + (maxSize() - minSize()) * event.target.value / 1000);
+        });
+        $('crop-fit').addEventListener('click', () => { if (crop.upload) largestSquare(); });
+        $('crop-cancel').addEventListener('click', closeCropper);
+        $('crop-other').addEventListener('click', () => chooseCover(crop.name));
+        $('crop-save').addEventListener('click', () => saveCrop());
+        $('crop-modal').addEventListener('click', event => { if (event.target === event.currentTarget) closeCropper(); });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !$('crop-modal').hidden) closeCropper();
+        });
+
+        async function saveCrop() {
+            if (!crop.upload || $('crop-save').disabled) return;
+            const name = crop.name;
+            const fractions = [crop.x / crop.W, crop.y / crop.H, crop.size / crop.W, crop.size / crop.H];
+            const form = new FormData();
+            form.append('cover', crop.upload);
+            form.append('crop', fractions.map(v => v.toFixed(6)).join(','));
+            $('crop-save').disabled = true;
+            cropSay('SAVING COVER...', 'busy');
+            try {
+                const data = await api('PUT', API + 'sounds/' + encodeURIComponent(name) + '/cover', form);
+                coverVersion[name] = Date.now();
+                closeCropper();
+                replaceSound(data.sound, 'COVER SAVED ✔');
+            } catch (e) {
+                cropSay('ERROR: ' + e.message, 'err');
+                $('crop-save').disabled = false;
+            }
+        }
+
+        async function removeCover(name) {
+            if (!confirm(`Remove the cover image embedded in "${name}"?`)) return;
+            const card = cardOf(name);
+            card.say('REMOVING COVER...', 'busy');
+            try {
+                const data = await api('DELETE', API + 'sounds/' + encodeURIComponent(name) + '/cover');
+                coverVersion[name] = Date.now();
+                replaceSound(data.sound, 'COVER REMOVED ✔');
+            } catch (e) {
+                card.say('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        // --- delete / restore ------------------------------------------------
+        async function remove(name) {
+            if (!confirm(`Delete "${name}"?\n\nThe file is only renamed and can be restored below.`)) return;
+            const card = cardOf(name);
+            card.say('DELETING...', 'busy');
+            try {
+                await api('DELETE', API + 'sounds/' + encodeURIComponent(name));
+                sounds = sounds.filter(s => s.name !== name);
+                card.remove();
+                applyFilter();
+                loadTrash();
+            } catch (e) {
+                card.say('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        async function loadTrash() {
+            const list = document.getElementById('trash');
+            try {
+                const items = await api('GET', API + 'trash');
+                list.replaceChildren(...items.map(item => {
+                    const status = el('small');
+                    const button = el('button', { type: 'button', onclick: () => restore(item.id, button, status) }, '↩ RESTORE');
+                    return el('li', {}, el('span', {}, '💿 ' + item.name),
+                              el('small', {}, 'deleted ' + new Date(item.deleted_at).toLocaleString()), button, status);
+                }));
+                if (!items.length) list.append(el('li', { class: 'empty' }, 'NOTHING DELETED'));
+            } catch (e) {
+                list.replaceChildren(el('li', { class: 'err' }, 'ERROR: ' + e.message));
+            }
+        }
+
+        async function restore(id, button, status) {
+            button.disabled = true;
+            try {
+                const data = await api('POST', API + 'trash/' + encodeURIComponent(id) + '/restore');
+                if (data.sound) replaceSound(data.sound, 'RESTORED ✔');
+                loadTrash();
+            } catch (e) {
+                status.textContent = 'ERROR: ' + e.message;
+                status.className = 'err';
+                button.disabled = false;
+            }
+        }
+
+        // --- uploads ---------------------------------------------------------
+        async function uploadFiles(files) {
+            const log = document.getElementById('upload-log');
+            // One at a time: keeps the server's duplicate check simple and the log in order
+            for (const file of files) {
+                const line = el('li', { class: 'busy' }, `⏳ ${file.name} – uploading...`);
+                log.prepend(line);
+                const form = new FormData();
+                form.append('file', file);
+                try {
+                    const data = await api('POST', API + 'upload', form);
+                    line.className = 'ok';
+                    line.textContent = `✔ ${file.name} – added` + (data.name !== file.name ? ` as "${data.name}"` : '');
+                    if (data.sound) replaceSound(data.sound);
+                } catch (e) {
+                    const duplicate = e.data && e.data.existing;
+                    line.className = duplicate ? 'warn' : 'err';
+                    line.textContent = duplicate
+                        ? `⚠ ${file.name} – skipped, the same audio is already in the library as "${e.data.existing}"`
+                        : `✖ ${file.name} – ${e.message}`;
+                }
+            }
+        }
+
+        const dropzone = document.getElementById('dropzone');
+        document.getElementById('upload-input').addEventListener('change', event => {
+            uploadFiles([...event.target.files]);
+            event.target.value = '';
+        });
+        ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
+            event.preventDefault();
+            dropzone.classList.add('over');
+        }));
+        ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, () => dropzone.classList.remove('over')));
+        dropzone.addEventListener('drop', event => {
+            event.preventDefault();
+            uploadFiles([...event.dataTransfer.files]);
+        });
+
+        // --- start -----------------------------------------------------------
+        api('GET', API + 'me').then(me => {
+            const n = me.normalization;
+            document.getElementById('norm-info').textContent = n.enabled
+                ? `NORMALIZING TO ${n.target_lufs} LUFS (max +${n.max_gain_db} dB, peaks ≤ ${n.peak_ceiling_db} dBTP)`
+                : 'NORMALIZATION OFF';
+        }).catch(() => {});
+        loadSounds();
+        loadTrash();
+        // Pick up finished loudness analyses without losing unsaved edits
+        setInterval(async () => {
+            if (document.hidden || document.querySelector('.card.dirty')) return;
+            if (!sounds.some(s => s.loudness && s.loudness.status === 'pending')) return;
+            try {
+                const fresh = await (await fetch('/meta')).json();
+                fresh.forEach(sound => {
+                    const old = sounds.find(s => s.name === sound.name);
+                    if (old && old.loudness.status === 'pending' && sound.loudness.status !== 'pending') replaceSound(sound);
+                });
+            } catch (e) { /* try again later */ }
+        }, 5000);
+    </script>
+</body>
+</html>
