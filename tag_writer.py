@@ -214,3 +214,45 @@ def write_cover(path, image_bytes, crop=None):
     crop: fractions (x, y, w, h) of the upright image, see cover_image."""
     cover = prepare_cover(image_bytes, crop) if image_bytes is not None else None
     _edit_atomically(path, lambda audio, kind: _apply_cover(audio, kind, cover))
+
+
+# Entries that describe the old audio stream and would be wrong after a cut.
+STALE_ID3_FRAMES = ('TLEN',)
+STALE_MP4_KEYS = ('----:com.apple.iTunes:iTunSMPB',)
+
+
+def copy_tags(src, dst):
+    """Carry every tag of src (text, search tags, cover art) over to dst, in
+    place, replacing dst's own. Both must use the same tag format."""
+    try:
+        old = mutagen.File(src)
+    except Exception as e:
+        raise TagWriteError(f'cannot read tags: {e}')
+    if old is None or not old.tags:
+        return
+    kind = _kind(old)
+    new = _open(dst)
+    if _kind(new) != kind:
+        raise TagWriteError('cannot carry the tags over to a different tag format')
+    try:
+        if kind == 'id3':
+            new.tags.clear()
+            for frame in old.tags.values():
+                if frame.FrameID not in STALE_ID3_FRAMES:
+                    new.tags.add(frame)
+        elif kind == 'mp4':
+            new.tags.clear()
+            for key, value in old.tags.items():
+                if key not in STALE_MP4_KEYS:
+                    new.tags[key] = value
+        else:
+            new.tags.clear()
+            for key, values in old.tags.as_dict().items():
+                new.tags[key] = values
+            if isinstance(old, FLAC) and isinstance(new, FLAC):
+                new.clear_pictures()
+                for picture in old.pictures:
+                    new.add_picture(picture)
+        new.save()
+    except Exception as e:
+        raise TagWriteError(f'could not carry the tags over: {e}')

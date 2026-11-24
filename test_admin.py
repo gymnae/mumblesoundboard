@@ -303,6 +303,33 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/edit/api/sounds/nope.wav/audio', headers=USER).status_code, 404)
         self.assertEqual(self.client.get('/edit/api/sounds/horn.wav/audio').status_code, 401)
 
+    def test_trim_and_undo(self):
+        self.upload(self.audio(440, seconds=2), 'horn.wav')
+        wave = self.client.get('/edit/api/sounds/horn.wav/waveform?points=100', headers=USER).get_json()
+        self.assertAlmostEqual(wave['duration'], 2.0, delta=0.01)
+        self.assertEqual(len(wave['peaks']), 100)
+        self.assertEqual(self.client.get('/edit/api/sounds/horn.wav/waveform?points=x', headers=USER).status_code, 400)
+
+        body = {'start': 0.5, 'end': 1.5, 'fade_in': 0.05, 'fade_out': 0.05}
+        self.assertEqual(self.client.post('/edit/api/sounds/horn.wav/trim', headers=USER, json=body).status_code, 403)
+        trimmed = self.client.post('/edit/api/sounds/horn.wav/trim', headers=dict(USER, **WRITE), json=body)
+        self.assertEqual(trimmed.status_code, 200, trimmed.get_json())
+        self.assertAlmostEqual(trimmed.get_json()['sound']['duration'], 1.0, delta=0.05)
+        self.assertEqual(trimmed.get_json()['sound']['trim_backups'], 1)
+        self.assertEqual(self.client.get('/edit/api/trims', headers=USER).get_json(), {'horn.wav': 1})
+
+        bad = self.client.post('/edit/api/sounds/horn.wav/trim', headers=dict(USER, **WRITE), json={'start': 1, 'end': 0.5})
+        self.assertEqual(bad.status_code, 400)
+        missing = self.client.post('/edit/api/sounds/nope.wav/trim', headers=dict(USER, **WRITE), json=body)
+        self.assertEqual(missing.status_code, 404)
+
+        undone = self.client.post('/edit/api/sounds/horn.wav/untrim', headers=dict(USER, **WRITE))
+        self.assertEqual(undone.status_code, 200)
+        self.assertAlmostEqual(undone.get_json()['sound']['duration'], 2.0, delta=0.05)
+        self.assertEqual(undone.get_json()['sound']['trim_backups'], 0)
+        self.assertIn(undone.get_json()['trimmed_id'], [i['id'] for i in self.client.get('/edit/api/trash', headers=USER).get_json()])
+        self.assertEqual(self.client.post('/edit/api/sounds/horn.wav/untrim', headers=dict(USER, **WRITE)).status_code, 404)
+
     def test_delete_trash_restore(self):
         self.upload(self.audio(440), 'bye.wav')
         deleted = self.client.delete('/edit/api/sounds/bye.wav', headers=dict(USER, **WRITE))

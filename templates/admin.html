@@ -260,6 +260,32 @@
         .crop-msg { text-align: center; font-weight: bold; font-size: 12px; min-height: 15px; margin-top: 8px; }
         .crop-hint { font-size: 10px; color: #C0C0C0; text-align: center; margin: 8px 0 0; }
 
+        /* --- TRIMMER (shares the cropper's modal look) --- */
+        .trim-stage {
+            position: relative;
+            height: 150px;
+            background: #000000;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            touch-action: none;
+            cursor: crosshair;
+            outline: none;
+        }
+        .trim-stage:focus-visible { box-shadow: 0 0 0 2px #FFFF00; }
+        .trim-stage canvas { display: block; width: 100%; height: 100%; }
+        .trim-stage.loading::after {
+            content: 'LOADING WAVEFORM...';
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: #00FF00; font-weight: bold;
+        }
+        .trim-fields { display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: center; align-items: center;
+                       margin-top: 10px; font-size: 12px; color: #FFFFFF; font-weight: bold; }
+        .trim-fields input { width: 6.5em; font-family: inherit; }
+        .trim-length { color: #FFFF00; }
+
         @media (max-width: 600px) {
             .actions button { min-height: 40px; flex: 1 1 auto; }
             .crop-side { width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: center; }
@@ -342,6 +368,34 @@
             </div>
             <p class="crop-hint">Drag the square to move it · drag a corner to resize · drag outside it to draw a new one ·
                 mouse wheel or + / − resizes · arrow keys move · Enter saves</p>
+        </div>
+    </div>
+
+    <div id="trim-modal" class="crop-modal" hidden>
+        <div class="crop-panel" role="dialog" aria-modal="true" aria-labelledby="trim-title">
+            <h2 id="trim-title">✂️ TRIM THE SOUND</h2>
+            <div class="crop-name" id="trim-name"></div>
+            <div class="trim-stage loading" id="trim-stage" tabindex="0"
+                 aria-label="Waveform. Drag to select the part to keep. Space plays the selection.">
+                <canvas id="trim-wave"></canvas>
+            </div>
+            <div class="trim-fields">
+                <label>START <input type="number" id="trim-start" min="0" step="0.01"> s</label>
+                <label>END <input type="number" id="trim-end" min="0" step="0.01"> s</label>
+                <label>FADE IN <input type="number" id="trim-fade-in" min="0" step="0.05" value="0"> s</label>
+                <label>FADE OUT <input type="number" id="trim-fade-out" min="0" step="0.05" value="0"> s</label>
+                <span class="trim-length" id="trim-length"></span>
+            </div>
+            <div class="crop-msg" id="trim-msg"></div>
+            <div class="crop-actions">
+                <button type="button" id="trim-play" disabled>▶ PREVIEW</button>
+                <button type="button" class="save" id="trim-save" disabled>✂ SAVE TRIM</button>
+                <button type="button" id="trim-all" disabled>↔ WHOLE SOUND</button>
+                <button type="button" id="trim-cancel">CANCEL</button>
+            </div>
+            <p class="crop-hint">Drag across the waveform to select the part to keep · drag a green marker to adjust it ·
+                Space plays the selection with its fades ·
+                the version before the cut is kept and UNDO TRIM brings it back</p>
         </div>
     </div>
 
@@ -457,6 +511,9 @@
                 el('div', { class: 'actions' },
                     saveBtn,
                     el('button', { type: 'button', class: 'listen', title: 'Listen here in the browser (not in the channel, not counted)', onclick: e => togglePreview(sound.name, e.currentTarget) }, '▶ LISTEN'),
+                    el('button', { type: 'button', title: 'Cut the start and end of the sound', onclick: () => openTrimmer(sound) }, '✂ TRIM'),
+                    sound.trim_backups ? el('button', { type: 'button', title: 'Bring back the version from before the last trim', onclick: () => untrim(sound.name) },
+                        sound.trim_backups > 1 ? `↶ UNDO TRIM (${sound.trim_backups})` : '↶ UNDO TRIM') : [],
                     el('button', { type: 'button', disabled: !sound.has_cover, onclick: () => removeCover(sound.name) }, '✖ COVER'),
                     el('button', { type: 'button', class: 'delete', onclick: () => remove(sound.name) }, '🗑 DELETE')),
                 msg);
@@ -495,6 +552,10 @@
         const player = new Audio();
         let playerName = null, playerBtn = null;
 
+        function audioUrl(name) {  // fresh each time: trimming changes the audio under the same name
+            return API + 'sounds/' + encodeURIComponent(name) + '/audio?v=' + Date.now();
+        }
+
         function resetPreviewButton() {
             if (playerBtn) playerBtn.textContent = '▶ LISTEN';
             playerName = playerBtn = null;
@@ -514,7 +575,7 @@
             playerName = name;
             playerBtn = btn;
             btn.textContent = '⏳ LOADING';
-            player.src = API + 'sounds/' + encodeURIComponent(name) + '/audio';
+            player.src = audioUrl(name);
             player.play().then(() => { if (playerBtn === btn) btn.textContent = '■ STOP'; })
                 .catch(err => {
                     if (playerBtn !== btn) return;  // replaced by another sound meanwhile
@@ -571,8 +632,11 @@
 
         async function loadSounds() {
             try {
-                const response = await fetch('/meta');
-                sounds = await response.json();
+                const [list, trims] = await Promise.all([
+                    fetch('/meta').then(r => r.json()),
+                    api('GET', API + 'trims').catch(() => ({})),
+                ]);
+                sounds = list.map(sound => Object.assign(sound, { trim_backups: trims[sound.name] || 0 }));
                 renderCards();
             } catch (e) {
                 document.getElementById('cards').replaceChildren(el('span', { class: 'err' }, 'COULD NOT LOAD SOUNDS'));
@@ -988,6 +1052,284 @@
             uploadFiles([...event.dataTransfer.files]);
         });
 
+        // --- trimmer ---------------------------------------------------------
+        // The waveform comes from the server (peaks of the real file), the
+        // preview plays the normalized MP3 between the markers with the fades
+        // applied to the volume, and saving sends start/end/fades in seconds.
+        const MIN_TRIM = 0.05;
+        const trim = {
+            sound: null, duration: 0, peaks: [], scale: 1,
+            start: 0, end: 0, fadeIn: 0, fadeOut: 0,
+            drag: null,          // {mode: 'start'|'end'|'new', anchor}
+            audio: new Audio(), playing: false, frame: 0,
+        };
+        trim.audio.preload = 'auto';
+        const trimStage = $('trim-stage');
+        const trimCanvas = $('trim-wave');
+
+        function trimSay(text, cls) {
+            $('trim-msg').textContent = text || '';
+            $('trim-msg').className = 'crop-msg' + (cls ? ' ' + cls : '');
+        }
+
+        function fmtSeconds(t) { return t.toFixed(2); }
+
+        async function openTrimmer(sound) {
+            stopPreview();
+            Object.assign(trim, { sound, duration: 0, peaks: [], start: 0, end: 0, fadeIn: 0, fadeOut: 0, drag: null });
+            $('trim-name').textContent = sound.name;
+            $('trim-fade-in').value = 0;
+            $('trim-fade-out').value = 0;
+            ['trim-play', 'trim-save', 'trim-all'].forEach(id => $(id).disabled = true);
+            trimStage.classList.add('loading');
+            trimSay('');
+            $('trim-modal').hidden = false;
+            drawTrim();
+            trim.audio.src = audioUrl(sound.name);
+            try {
+                const points = Math.min(4000, Math.max(200, Math.round(trimStage.clientWidth * (window.devicePixelRatio || 1))));
+                const wave = await api('GET', API + 'sounds/' + encodeURIComponent(sound.name) + '/waveform?points=' + points);
+                if (trim.sound !== sound) return;  // closed or reopened meanwhile
+                Object.assign(trim, { duration: wave.duration, peaks: wave.peaks, start: 0, end: wave.duration,
+                                      scale: 1 / wave.peaks.reduce((a, b) => Math.max(a, b), 0.05) });  // quiet sounds fill the height too
+                trimStage.classList.remove('loading');
+                $('trim-play').disabled = $('trim-all').disabled = false;
+                syncTrimInputs();
+                trimStage.focus();
+            } catch (e) {
+                trimStage.classList.remove('loading');
+                trimSay('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        function closeTrimmer() {
+            stopTrimPreview();
+            trim.audio.removeAttribute('src');
+            trim.audio.load();
+            trim.sound = null;
+            $('trim-modal').hidden = true;
+        }
+
+        function changed() {
+            return trim.duration > 0 && (trim.start > 0.005 || trim.end < trim.duration - 0.005 || trim.fadeIn > 0 || trim.fadeOut > 0);
+        }
+
+        function clampFades() {
+            const length = trim.end - trim.start;
+            trim.fadeIn = Math.min(Math.max(0, trim.fadeIn || 0), length);
+            trim.fadeOut = Math.min(Math.max(0, trim.fadeOut || 0), length - trim.fadeIn);
+        }
+
+        function syncTrimInputs() {
+            clampFades();
+            for (const [id, value] of [['trim-start', trim.start], ['trim-end', trim.end], ['trim-fade-in', trim.fadeIn], ['trim-fade-out', trim.fadeOut]]) {
+                if (document.activeElement !== $(id)) $(id).value = fmtSeconds(value);
+            }
+            $('trim-start').max = $('trim-end').max = fmtSeconds(trim.duration);
+            const cut = trim.duration - (trim.end - trim.start);
+            $('trim-length').textContent = `KEEP ${fmtSeconds(trim.end - trim.start)} of ${fmtSeconds(trim.duration)} s` + (cut > 0.005 ? ` (−${fmtSeconds(cut)})` : '');
+            $('trim-save').disabled = !changed();
+            drawTrim();
+        }
+
+        function drawTrim(playhead) {
+            const dpr = window.devicePixelRatio || 1;
+            const w = Math.max(1, Math.round(trimStage.clientWidth * dpr));
+            const h = Math.max(1, Math.round(trimStage.clientHeight * dpr));
+            if (trimCanvas.width !== w || trimCanvas.height !== h) { trimCanvas.width = w; trimCanvas.height = h; }
+            const ctx = trimCanvas.getContext('2d');
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, w, h);
+            if (!trim.duration) return;
+            const xOf = t => t / trim.duration * w;
+            const x0 = xOf(trim.start), x1 = xOf(trim.end), mid = h / 2;
+            // waveform: one bar per pixel column, bright inside the selection
+            const n = trim.peaks.length;
+            for (let x = 0; x < w; x++) {
+                const a = Math.floor(x / w * n), b = Math.max(a + 1, Math.floor((x + 1) / w * n));
+                let peak = 0;
+                for (let i = a; i < b && i < n; i++) peak = Math.max(peak, trim.peaks[i]);
+                const t = (x + 0.5) / w * trim.duration;
+                const inside = x >= x0 && x <= x1;
+                ctx.fillStyle = inside ? '#00FF00' : '#005500';
+                const bar = Math.max(1, Math.min(1, peak * trim.scale) * (h - 8) / 2 * (inside ? fadeGain(t) : 1));
+                ctx.fillRect(x, mid - bar, 1, bar * 2);
+            }
+            // cut-away parts and the fade ramps
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+            ctx.fillRect(0, 0, x0, h);
+            ctx.fillRect(x1, 0, w - x1, h);
+            ctx.strokeStyle = '#FFFF00';
+            ctx.lineWidth = dpr;
+            ctx.beginPath();
+            ctx.moveTo(x0, h - 2 * dpr);
+            ctx.lineTo(xOf(trim.start + trim.fadeIn), 2 * dpr);
+            ctx.lineTo(xOf(trim.end - trim.fadeOut), 2 * dpr);
+            ctx.lineTo(x1, h - 2 * dpr);
+            ctx.stroke();
+            // markers with grips
+            for (const x of [x0, x1]) {
+                ctx.fillStyle = '#00FF00';
+                ctx.fillRect(Math.round(x - dpr), 0, 2 * dpr, h);
+                ctx.fillRect(Math.round(x - 5 * dpr), 0, 10 * dpr, 10 * dpr);
+                ctx.fillRect(Math.round(x - 5 * dpr), h - 10 * dpr, 10 * dpr, 10 * dpr);
+            }
+            if (playhead !== undefined) {
+                ctx.fillStyle = '#FF00FF';
+                ctx.fillRect(Math.round(xOf(playhead) - dpr / 2), 0, Math.max(1, dpr), h);
+            }
+        }
+
+        function fadeGain(t) {  // linear, like ffmpeg's afade default
+            let g = 1;
+            if (trim.fadeIn > 0 && t < trim.start + trim.fadeIn) g = Math.min(g, (t - trim.start) / trim.fadeIn);
+            if (trim.fadeOut > 0 && t > trim.end - trim.fadeOut) g = Math.min(g, (trim.end - t) / trim.fadeOut);
+            return Math.min(1, Math.max(0, g));
+        }
+
+        function timeAt(event) {
+            const rect = trimStage.getBoundingClientRect();
+            return Math.min(trim.duration, Math.max(0, (event.clientX - rect.left) / rect.width * trim.duration));
+        }
+
+        function setRange(start, end) {
+            start = Math.max(0, Math.min(start, trim.duration - MIN_TRIM));
+            end = Math.min(trim.duration, Math.max(end, start + MIN_TRIM));
+            trim.start = start;
+            trim.end = end;
+            syncTrimInputs();
+        }
+
+        trimStage.addEventListener('pointerdown', event => {
+            if (!trim.duration || event.button > 0) return;
+            event.preventDefault();
+            trimStage.focus();
+            trimStage.setPointerCapture(event.pointerId);
+            const t = timeAt(event);
+            const grab = 10 / trimStage.clientWidth * trim.duration;  // 10 px
+            const dStart = Math.abs(t - trim.start), dEnd = Math.abs(t - trim.end);
+            trim.drag = Math.min(dStart, dEnd) <= grab ? { mode: dStart <= dEnd ? 'start' : 'end' } : { mode: 'new', anchor: t };
+        });
+        trimStage.addEventListener('pointermove', event => {
+            const t = trim.duration ? timeAt(event) : 0;
+            if (!trim.drag) {
+                const grab = 10 / trimStage.clientWidth * trim.duration;
+                trimStage.style.cursor = Math.min(Math.abs(t - trim.start), Math.abs(t - trim.end)) <= grab ? 'ew-resize' : 'crosshair';
+                return;
+            }
+            const d = trim.drag;
+            if (d.mode === 'start') setRange(Math.min(t, trim.end - MIN_TRIM), trim.end);
+            else if (d.mode === 'end') setRange(trim.start, Math.max(t, trim.start + MIN_TRIM));
+            else if (Math.abs(t - d.anchor) * trimStage.clientWidth / trim.duration >= 3) {
+                setRange(Math.min(t, d.anchor), Math.max(t, d.anchor));
+            }
+        });
+        const endTrimDrag = () => { trim.drag = null; };
+        trimStage.addEventListener('pointerup', endTrimDrag);
+        trimStage.addEventListener('pointercancel', endTrimDrag);
+        trimStage.addEventListener('keydown', event => {
+            if (event.key === ' ') { event.preventDefault(); toggleTrimPreview(); }
+            else if (event.key === 'Enter' && !$('trim-save').disabled) { event.preventDefault(); saveTrim(); }
+        });
+        window.addEventListener('resize', () => { if (!$('trim-modal').hidden) drawTrim(); });
+
+        for (const [id, key] of [['trim-start', 'start'], ['trim-end', 'end'], ['trim-fade-in', 'fadeIn'], ['trim-fade-out', 'fadeOut']]) {
+            $(id).addEventListener('change', () => {
+                const value = parseFloat($(id).value);
+                if (Number.isFinite(value)) {
+                    if (key === 'start') setRange(Math.min(value, trim.end - MIN_TRIM), trim.end);
+                    else if (key === 'end') setRange(trim.start, Math.max(value, trim.start + MIN_TRIM));
+                    else trim[key] = Math.max(0, value);
+                }
+                $(id).blur();
+                syncTrimInputs();
+            });
+        }
+
+        function stopTrimPreview() {
+            trim.playing = false;
+            cancelAnimationFrame(trim.frame);
+            trim.audio.pause();
+            $('trim-play').textContent = '▶ PREVIEW';
+            drawTrim();
+        }
+
+        function whenSeekable(audio) {
+            return audio.readyState >= 1 ? Promise.resolve() : new Promise((resolve, reject) => {
+                audio.addEventListener('loadedmetadata', resolve, { once: true });
+                audio.addEventListener('error', () => reject(new Error('the audio could not be loaded')), { once: true });
+            });
+        }
+
+        async function toggleTrimPreview() {
+            if (trim.playing) return stopTrimPreview();
+            if (!trim.duration) return;
+            stopPreview();
+            trim.playing = true;
+            $('trim-play').textContent = '■ STOP';
+            try {
+                await whenSeekable(trim.audio);
+                trim.audio.currentTime = trim.start;
+                trim.audio.volume = fadeGain(trim.start);
+                await trim.audio.play();
+            } catch (e) {
+                stopTrimPreview();
+                if (e.name !== 'AbortError') trimSay('ERROR: ' + e.message, 'err');
+                return;
+            }
+            const tick = () => {
+                if (!trim.playing) return;
+                const t = trim.audio.currentTime;
+                if (t >= trim.end || trim.audio.ended) return stopTrimPreview();
+                trim.audio.volume = fadeGain(t);
+                drawTrim(t);
+                trim.frame = requestAnimationFrame(tick);
+            };
+            trim.frame = requestAnimationFrame(tick);
+        }
+
+        async function saveTrim() {
+            if (!trim.sound || !changed()) return;
+            stopTrimPreview();
+            const name = trim.sound.name;
+            $('trim-save').disabled = true;
+            trimSay('CUTTING...', 'busy');
+            try {
+                const data = await api('POST', API + 'sounds/' + encodeURIComponent(name) + '/trim', {
+                    start: +trim.start.toFixed(3), end: +trim.end.toFixed(3),
+                    fade_in: +trim.fadeIn.toFixed(3), fade_out: +trim.fadeOut.toFixed(3),
+                });
+                closeTrimmer();
+                replaceSound(data.sound, 'TRIMMED · UNDO TRIM brings the old version back');
+            } catch (e) {
+                trimSay('ERROR: ' + e.message, 'err');
+                $('trim-save').disabled = !changed();
+            }
+        }
+
+        async function untrim(name) {
+            if (!confirm(`Bring back "${name}" as it was before the last trim?\n\nThe trimmed version is moved to the deleted sounds.`)) return;
+            const card = cardOf(name);
+            card.say('UNDOING...', 'busy');
+            try {
+                if (playerName === name) stopPreview();
+                const data = await api('POST', API + 'sounds/' + encodeURIComponent(name) + '/untrim');
+                replaceSound(data.sound, 'TRIM UNDONE');
+                loadTrash();
+            } catch (e) {
+                card.say('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        $('trim-play').addEventListener('click', toggleTrimPreview);
+        $('trim-save').addEventListener('click', saveTrim);
+        $('trim-all').addEventListener('click', () => { trim.fadeIn = trim.fadeOut = 0; setRange(0, trim.duration); });
+        $('trim-cancel').addEventListener('click', closeTrimmer);
+        $('trim-modal').addEventListener('click', event => { if (event.target === event.currentTarget) closeTrimmer(); });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !$('trim-modal').hidden) closeTrimmer();
+        });
+
         // --- start -----------------------------------------------------------
         api('GET', API + 'me').then(me => {
             const n = me.normalization;
@@ -1005,7 +1347,8 @@
                 const fresh = await (await fetch('/meta')).json();
                 fresh.forEach(sound => {
                     const old = sounds.find(s => s.name === sound.name);
-                    if (old && old.loudness.status === 'pending' && sound.loudness.status !== 'pending') replaceSound(sound);
+                    if (old && old.loudness.status === 'pending' && sound.loudness.status !== 'pending')
+                        replaceSound(Object.assign(sound, { trim_backups: old.trim_backups }));
                 });
             } catch (e) { /* try again later */ }
         }, 5000);
