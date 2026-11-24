@@ -264,7 +264,9 @@ OIDC login. The rest of the soundboard (playing, search, `/meta`, …) stays pub
   fingerprint of the file's *audio packets* (`ffmpeg -c copy -f hash`), not the file bytes. The same
   recording is therefore recognized even when its tags, cover or file name differ. Files added to the
   folder by hand are fingerprinted before the check.
-* **Edit** title, artist, album, year and genre, and **tags**. Changes are written into the file on a
+* **Listen** to a sound in the browser with `▶ LISTEN`. It plays only for you, normalized like a
+  channel play, and does not count as a play.
+* **Edit** title, artist and album, and **tags**. Changes are written into the file on a
   copy that then replaces the original atomically. A sound that is playing is not disturbed, and a
   failed write leaves the file untouched.
 * **Covers:** click a sound's cover (or drop an image on it) and choose the area that becomes the
@@ -394,6 +396,8 @@ page does. Other websites cannot add it to requests made with the user's login c
   Without `crop` the whole image is kept. `DELETE` removes all embedded pictures.
 - `POST /edit/api/image-preview` — multipart field `image`. Returns a JPEG/PNG (at most 1600 px) of
   any supported image for display, with `X-Image-Width`/`X-Image-Height` of the original.
+- `GET /edit/api/sounds/<file>/audio` — the sound as MP3, normalized like a channel play, for
+  listening in the browser. Not played in the channel and not counted.
 - `DELETE /edit/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
 - `GET /edit/api/trash` — deleted sounds; `POST /edit/api/trash/<id>/restore` brings one back
   (`409` if the name is taken again or the same audio was uploaded since).

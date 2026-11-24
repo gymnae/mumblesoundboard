@@ -287,6 +287,22 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(me['cover']['aspect'], 1.0)
         self.assertIn('AVIF', me['cover']['formats'])
 
+    def test_listen_in_browser(self):
+        self.upload(self.audio(440, seconds=1), 'horn.wav')
+        calls = []
+        real_filter = self.lib.playback_filter
+        self.lib.playback_filter = lambda name: calls.append(name) or 'volume=-6dB'
+        self.addCleanup(setattr, self.lib, 'playback_filter', real_filter)
+        response = self.client.get('/edit/api/sounds/horn.wav/audio', headers=USER)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'audio/mpeg')
+        self.assertTrue(response.data[:3] == b'ID3' or response.data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xfa'))
+        self.assertEqual(calls, ['horn.wav'])  # normalized like a channel play
+        partial = self.client.get('/edit/api/sounds/horn.wav/audio', headers=dict(USER, Range='bytes=0-99'))
+        self.assertEqual((partial.status_code, len(partial.data)), (206, 100))
+        self.assertEqual(self.client.get('/edit/api/sounds/nope.wav/audio', headers=USER).status_code, 404)
+        self.assertEqual(self.client.get('/edit/api/sounds/horn.wav/audio').status_code, 401)
+
     def test_delete_trash_restore(self):
         self.upload(self.audio(440), 'bye.wav')
         deleted = self.client.delete('/edit/api/sounds/bye.wav', headers=dict(USER, **WRITE))
