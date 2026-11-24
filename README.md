@@ -22,7 +22,7 @@ A turnkey, lightweight, and secure Dockerized soundboard solution that connects 
     * **Tag search:** Sounds carry keyword tags (`#meme`, `#loud`, …). Click a tag or type `#tag` to filter.
 * **Cover Art Tiles:** Each sound tile shows the cover embedded in the file's tags, or a pixel-art vinyl fallback when there is none.
 * **Loudness Normalization:** Every sound button plays at the same perceived loudness (EBU R128), without added latency.
-* **Admin Area (behind your SSO):** Upload sounds (duplicates are rejected by audio fingerprint), edit tags and covers, and delete sounds. Deleted sounds are only renamed, so they can be restored. Login is handled by [caddy-security](https://github.com/greenpau/caddy-security) with OIDC.
+* **Edit Area (`/edit`, behind your SSO):** Upload sounds (duplicates are rejected by audio fingerprint), edit tags and covers, and delete sounds. Deleted sounds are only renamed, so they can be restored. Login is handled by [caddy-security](https://github.com/greenpau/caddy-security) with OIDC.
 * **Statistics:** Tracks play counts for both local files and YouTube links in a persistent SQLite database.
 * **Security Hardened:** Runs as a non-root user (UID 1000) inside the container with read-only root filesystem access.
 
@@ -110,7 +110,7 @@ Open your browser and navigate to: http://your-server-ip:5000
 |NORMALIZE_MAX_GAIN_DB |	12 |	Largest boost for quiet sounds (cuts are not limited).|
 |NORMALIZE_PEAK_DBTP |	-1 |	Peak ceiling. A limiter is added only when a boost would push peaks above it.|
 |LIBRARY_SCAN_INTERVAL |	300 |	Seconds between scans of the sounds folder for files added or changed outside the admin area (minimum 10).|
-|ADMIN_AUTH |	off |	`proxy` enables the `/admin` area and trusts the identity header from caddy-security. With `off`, everything under `/admin` answers 404.|
+|ADMIN_AUTH |	off |	`proxy` enables the `/edit` area and trusts the identity header from caddy-security. With `off`, everything under `/edit` answers 404.|
 |ADMIN_USER_HEADER |	X-Token-User-Email |	Header carrying the signed-in user.|
 |ADMIN_ROLES_HEADER |	X-Token-User-Roles |	Header carrying the user's roles (space-separated).|
 |ADMIN_ROLES |	None |	Comma-separated roles; when set, the user needs at least one of them.|
@@ -251,9 +251,9 @@ unchanged. Files dropped into `sounds/` by hand are found by the periodic scan
 `status` is `pending`, `analyzed`, `silent`, `failed` or `unreadable`. YouTube and other web streams
 are not normalized: streaming services already level their audio. Use the BGM volume slider for them.
 
-## 🔐 Admin area: upload, tags, covers, delete
+## 🔐 Edit area (/edit): upload, tags, covers, delete
 
-`/admin` is the maintenance page. It is enabled with `ADMIN_AUTH=proxy` and is meant to sit behind
+`/edit` is the maintenance page. It is enabled with `ADMIN_AUTH=proxy` and is meant to sit behind
 [caddy-security](https://github.com/greenpau/caddy-security) (AuthCrunch), which performs the
 OIDC login. The rest of the soundboard (playing, search, `/meta`, …) stays public.
 
@@ -285,7 +285,7 @@ The `sounds` volume must be writable by UID 1000 for this. Play counts stay atta
 
 ### Caddy configuration
 
-caddy-security protects `/admin*`; everything else is proxied without login. The policy passes the
+caddy-security protects `/edit*`; everything else is proxied without login. The policy passes the
 user on in `X-Token-User-Email` (`inject headers with claims`). Example with a generic OIDC provider
 (Keycloak, Authentik, Pocket ID, …) whose `soundboard-admins` group may administer the board:
 
@@ -328,8 +328,8 @@ user on in `X-Token-User-Email` (`inject headers with claims`). Example with a g
 soundboard.example.com {
 	route {
 		authenticate /auth/* with myportal
-		@admin path /admin /admin/*
-		route @admin {
+		@edit path /edit /edit/*
+		route @edit {
 			# Drop anything a client sent itself; the policy sets the real values.
 			request_header -X-Token-*
 			authorize with soundboard_admin
@@ -341,7 +341,7 @@ soundboard.example.com {
 ```
 
 This is a sketch following the AuthCrunch docs. Keep your existing portal and identity provider
-blocks, and add only the policy and the `@admin` route.
+blocks, and add only the policy and the `@edit` route.
 
 Then start the soundboard with `ADMIN_AUTH=proxy` (optionally `ADMIN_ROLES=authp/admin`).
 
@@ -360,20 +360,20 @@ page does. Other websites cannot add it to requests made with the user's login c
 
 **Admin API** (all JSON; errors are `{"error": "…"}` with a matching status code):
 
-- `POST /admin/api/upload` — multipart field `file`. `201 {"name", "sound"}`; `409 {"error", "existing"}`
+- `POST /edit/api/upload` — multipart field `file`. `201 {"name", "sound"}`; `409 {"error", "existing"}`
   for a duplicate; `413` too large; `415` not an allowed/playable audio file.
-- `PATCH /admin/api/sounds/<file>` — JSON with any of `title`, `artist`, `album`, `year`, `genre`
+- `PATCH /edit/api/sounds/<file>` — JSON with any of `title`, `artist`, `album`, `year`, `genre`
   (empty string or `null` removes it) and `tags` (list). Returns `{"sound"}`.
-- `PUT /admin/api/sounds/<file>/cover` — multipart field `cover` (any supported image) and
+- `PUT /edit/api/sounds/<file>/cover` — multipart field `cover` (any supported image) and
   optional `crop=x,y,width,height`: the area as fractions (0–1) of the upright image, e.g.
   `0.25,0,0.5,1` for the middle square of a 2:1 picture. The area is made square around its centre.
   Without `crop` the whole image is kept. `DELETE` removes all embedded pictures.
-- `POST /admin/api/image-preview` — multipart field `image`. Returns a JPEG/PNG (at most 1600 px) of
+- `POST /edit/api/image-preview` — multipart field `image`. Returns a JPEG/PNG (at most 1600 px) of
   any supported image for display, with `X-Image-Width`/`X-Image-Height` of the original.
-- `DELETE /admin/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
-- `GET /admin/api/trash` — deleted sounds; `POST /admin/api/trash/<id>/restore` brings one back
+- `DELETE /edit/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
+- `GET /edit/api/trash` — deleted sounds; `POST /edit/api/trash/<id>/restore` brings one back
   (`409` if the name is taken again or the same audio was uploaded since).
-- `GET /admin/api/me` — signed-in user and the upload/normalization settings.
+- `GET /edit/api/me` — signed-in user and the upload/normalization settings.
 
 ## 📺 Schnackn / LiveKit Session Integration
 

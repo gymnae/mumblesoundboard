@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>~Soundboard 98~ ADMIN</title>
+    <title>~Soundboard 98~ EDIT</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
@@ -275,7 +275,7 @@
     <marquee scrollamount="8"><b style="color:#FF00FF">*** SYSOP ACCESS GRANTED *** UPLOAD · TAG · COVER · DELETE ***</b></marquee>
 
     <div class="container">
-        <h1>Soundboard 2000 · Admin</h1>
+        <h1>Soundboard 2000 · Edit</h1>
 
         <div class="bar">
             <span>👤 signed in as <b>{{ user }}</b></span>
@@ -346,6 +346,7 @@
     </div>
 
     <script>
+        const API = {{ api_base|tojson }};
         const FIELDS = [['title', 'TITLE'], ['artist', 'ARTIST'], ['album', 'ALBUM'], ['year', 'YEAR'], ['genre', 'GENRE'], ['tags', 'TAGS']];
         const coverVersion = {};   // name -> cache buster after a cover change
         let sounds = [];
@@ -479,7 +480,7 @@
                 saveBtn.disabled = true;
                 say('SAVING...', 'busy');
                 try {
-                    const data = await api('PATCH', '/admin/api/sounds/' + encodeURIComponent(sound.name), body);
+                    const data = await api('PATCH', API + 'sounds/' + encodeURIComponent(sound.name), body);
                     replaceSound(data.sound, 'SAVED ✔');
                 } catch (e) {
                     say('ERROR: ' + e.message, 'err');
@@ -621,7 +622,7 @@
             form.append('image', file);
             let response;
             try {
-                response = await fetch('/admin/api/image-preview', {
+                response = await fetch(API + 'image-preview', {
                     method: 'POST', body: form, credentials: 'same-origin', headers: { 'X-Soundboard-Admin': '1' },
                 });
             } catch (e) {
@@ -834,7 +835,7 @@
             $('crop-save').disabled = true;
             cropSay('SAVING COVER...', 'busy');
             try {
-                const data = await api('PUT', '/admin/api/sounds/' + encodeURIComponent(name) + '/cover', form);
+                const data = await api('PUT', API + 'sounds/' + encodeURIComponent(name) + '/cover', form);
                 coverVersion[name] = Date.now();
                 closeCropper();
                 replaceSound(data.sound, 'COVER SAVED ✔');
@@ -849,7 +850,7 @@
             const card = cardOf(name);
             card.say('REMOVING COVER...', 'busy');
             try {
-                const data = await api('DELETE', '/admin/api/sounds/' + encodeURIComponent(name) + '/cover');
+                const data = await api('DELETE', API + 'sounds/' + encodeURIComponent(name) + '/cover');
                 coverVersion[name] = Date.now();
                 replaceSound(data.sound, 'COVER REMOVED ✔');
             } catch (e) {
@@ -863,7 +864,7 @@
             const card = cardOf(name);
             card.say('DELETING...', 'busy');
             try {
-                await api('DELETE', '/admin/api/sounds/' + encodeURIComponent(name));
+                await api('DELETE', API + 'sounds/' + encodeURIComponent(name));
                 sounds = sounds.filter(s => s.name !== name);
                 card.remove();
                 applyFilter();
@@ -876,7 +877,7 @@
         async function loadTrash() {
             const list = document.getElementById('trash');
             try {
-                const items = await api('GET', '/admin/api/trash');
+                const items = await api('GET', API + 'trash');
                 list.replaceChildren(...items.map(item => {
                     const status = el('small');
                     const button = el('button', { type: 'button', onclick: () => restore(item.id, button, status) }, '↩ RESTORE');
@@ -892,7 +893,7 @@
         async function restore(id, button, status) {
             button.disabled = true;
             try {
-                const data = await api('POST', '/admin/api/trash/' + encodeURIComponent(id) + '/restore');
+                const data = await api('POST', API + 'trash/' + encodeURIComponent(id) + '/restore');
                 if (data.sound) replaceSound(data.sound, 'RESTORED ✔');
                 loadTrash();
             } catch (e) {
@@ -912,7 +913,7 @@
                 const form = new FormData();
                 form.append('file', file);
                 try {
-                    const data = await api('POST', '/admin/api/upload', form);
+                    const data = await api('POST', API + 'upload', form);
                     line.className = 'ok';
                     line.textContent = `✔ ${file.name} – added` + (data.name !== file.name ? ` as "${data.name}"` : '');
                     if (data.sound) replaceSound(data.sound);
@@ -942,7 +943,7 @@
         });
 
         // --- start -----------------------------------------------------------
-        api('GET', '/admin/api/me').then(me => {
+        api('GET', API + 'me').then(me => {
             const n = me.normalization;
             document.getElementById('norm-info').textContent = n.enabled
                 ? `NORMALIZING TO ${n.target_lufs} LUFS (max +${n.max_gain_db} dB, peaks ≤ ${n.peak_ceiling_db} dBTP)`

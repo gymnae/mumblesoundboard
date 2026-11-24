@@ -455,7 +455,7 @@
             <a href="/?sort=pop">[Most Popular]</a>
             <br>
             <a href="/stats">[VIEW STATISTICS]</a>
-            {% if admin_enabled %} | <a href="{{ url_for('admin.page') }}">[ADMIN]</a>{% endif %}
+            {% if admin_enabled %} | <a href="{{ url_for('admin.page') }}">[EDIT SOUNDS]</a>{% endif %}
             <br><br>
             <input type="search" id="search-box" class="search-box" placeholder="SEARCH SOUNDS... or #tag"
                    value="{{ query }}" oninput="filterSounds()" aria-label="Search sounds by name, tags or #tag">

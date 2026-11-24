@@ -1,6 +1,6 @@
-"""The /admin area: upload, tag, cover and (masked) delete sounds.
+"""The /edit area: upload, tag, cover and (masked) delete sounds.
 
-Everything under /admin is meant to sit behind a caddy-security authorization
+Everything under /edit is meant to sit behind a caddy-security authorization
 policy; admin_auth.AdminAuth checks what the proxy passes on.
 """
 import io
@@ -14,9 +14,12 @@ import tag_writer
 from library import LibraryError, is_visible_name
 
 
+URL_PREFIX = '/edit'
+
+
 def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
     """sound_info(name) -> public record of a sound (as in /meta) or None."""
-    admin = Blueprint('admin', __name__, url_prefix='/admin')
+    admin = Blueprint('admin', __name__, url_prefix=URL_PREFIX)
 
     @admin.before_request
     def require_admin():
@@ -24,7 +27,7 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
         if result.ok:
             request.admin_user = result.user
             return None
-        if request.path.startswith('/admin/api/'):
+        if request.path.startswith(URL_PREFIX + '/api/'):
             return jsonify({'error': result.error}), result.status
         return render_template('admin_denied.html', status=result.status, error=result.error), result.status
 
@@ -62,6 +65,7 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
         return render_template('admin.html', user=request.admin_user,
                                max_upload_mb=max_upload_bytes // (1024 * 1024),
                                extensions=library.extensions(),
+                               api_base=URL_PREFIX + '/api/',
                                cover_accept=cover_image.ACCEPT,
                                cover_max_px=cover_image.COVER_MAX_PX,
                                cover_max_bytes=cover_image.MAX_INPUT_BYTES,

@@ -1,11 +1,11 @@
-"""Who may use /admin: identity established by caddy-security in front of the app.
+"""Who may use /edit (the admin area): identity established by caddy-security in front of the app.
 
 The OIDC login itself happens entirely in Caddy (caddy-security / AuthCrunch).
-Its authorization policy on /admin* injects the user's identity as request
+Its authorization policy on /edit* injects the user's identity as request
 headers; the app only checks what arrives:
 
 * ADMIN_AUTH=proxy enables the admin area (default: off, everything under
-  /admin answers 404). The identity header (X-Token-User-Email by default)
+  /edit answers 404). The identity header (X-Token-User-Email by default)
   must be present. Safe only when the app is reachable through Caddy alone,
   as with a noauth File Browser behind the same proxy.
 * ADMIN_JWT_KEY (shared HMAC secret, as in `crypto key sign-verify`) or

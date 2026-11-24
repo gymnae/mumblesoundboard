@@ -145,8 +145,8 @@ class AdminGateTests(unittest.TestCase):
         app = make_app(AdminAuth({}))
         self.addCleanup(shutil.rmtree, app.cleanup_dir)
         client = app.test_client()
-        self.assertEqual(client.get('/admin', headers=USER).status_code, 404)
-        response = client.get('/admin/api/trash', headers=USER)
+        self.assertEqual(client.get('/edit', headers=USER).status_code, 404)
+        response = client.get('/edit/api/trash', headers=USER)
         self.assertEqual(response.status_code, 404)
         self.assertIn('error', response.get_json())
 
@@ -154,15 +154,15 @@ class AdminGateTests(unittest.TestCase):
         app = make_app(AdminAuth({'ADMIN_AUTH': 'proxy'}))
         self.addCleanup(shutil.rmtree, app.cleanup_dir)
         client = app.test_client()
-        page = client.get('/admin/')
+        page = client.get('/edit/')
         self.assertEqual(page.status_code, 401)
         self.assertIn(b'PLEASE SIGN IN', page.data)
-        self.assertEqual(client.delete('/admin/api/sounds/x.mp3').status_code, 401)
+        self.assertEqual(client.delete('/edit/api/sounds/x.mp3').status_code, 401)
 
     def test_page_renders_for_admin(self):
         app = make_app(AdminAuth({'ADMIN_AUTH': 'proxy'}))
         self.addCleanup(shutil.rmtree, app.cleanup_dir)
-        page = app.test_client().get('/admin', headers=USER)
+        page = app.test_client().get('/edit', headers=USER)
         self.assertEqual(page.status_code, 200)
         self.assertIn(b'dj@example.org', page.data)
         self.assertIn(b'accept=".mp3,.wav,.ogg,audio/*"', page.data)
@@ -186,7 +186,7 @@ class AdminApiTests(unittest.TestCase):
             return f.read()
 
     def upload(self, data, name, headers=None):
-        return self.client.post('/admin/api/upload', headers=headers or dict(USER, **WRITE),
+        return self.client.post('/edit/api/upload', headers=headers or dict(USER, **WRITE),
                                 data={'file': (io.BytesIO(data), name)}, content_type='multipart/form-data')
 
     def test_upload_flow_and_duplicates(self):
@@ -211,18 +211,18 @@ class AdminApiTests(unittest.TestCase):
 
     def test_edit_tags_and_search(self):
         self.upload(self.audio(440), 'horn.wav')
-        response = self.client.patch('/admin/api/sounds/horn.wav', headers=dict(USER, **WRITE),
+        response = self.client.patch('/edit/api/sounds/horn.wav', headers=dict(USER, **WRITE),
                                      json={'title': 'Air Horn', 'year': '2014', 'tags': ['Loud', '#meme']})
         self.assertEqual(response.status_code, 200, response.get_json())
         sound = response.get_json()['sound']
         self.assertEqual((sound['title'], sound['year'], sound['tags']), ('Air Horn', '2014', ['loud', 'meme']))
         self.assertEqual([s['name'] for s in sound_search.search([sound], '#meme air')], ['horn.wav'])
 
-        bad = self.client.patch('/admin/api/sounds/horn.wav', headers=dict(USER, **WRITE), json={'year': 'soon'})
+        bad = self.client.patch('/edit/api/sounds/horn.wav', headers=dict(USER, **WRITE), json={'year': 'soon'})
         self.assertEqual(bad.status_code, 400)
-        missing = self.client.patch('/admin/api/sounds/nope.wav', headers=dict(USER, **WRITE), json={'title': 'x'})
+        missing = self.client.patch('/edit/api/sounds/nope.wav', headers=dict(USER, **WRITE), json={'title': 'x'})
         self.assertEqual(missing.status_code, 404)
-        hidden = self.client.patch('/admin/api/sounds/..%2Fx.wav', headers=dict(USER, **WRITE), json={'title': 'x'})
+        hidden = self.client.patch('/edit/api/sounds/..%2Fx.wav', headers=dict(USER, **WRITE), json={'title': 'x'})
         self.assertEqual(hidden.status_code, 404)
 
     def test_cover_upload_and_removal(self):
@@ -230,17 +230,17 @@ class AdminApiTests(unittest.TestCase):
         self.upload(self.audio(440, 'mp3'), 'horn.mp3')
         buffer = io.BytesIO()
         Image.new('RGB', (50, 50), 'blue').save(buffer, 'PNG')
-        response = self.client.put('/admin/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE),
+        response = self.client.put('/edit/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE),
                                    data={'cover': (io.BytesIO(buffer.getvalue()), 'c.png')},
                                    content_type='multipart/form-data')
         self.assertEqual(response.status_code, 200, response.get_json())
         self.assertTrue(response.get_json()['sound']['has_cover'])
 
-        junk = self.client.put('/admin/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE),
+        junk = self.client.put('/edit/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE),
                                data={'cover': (io.BytesIO(b'zzz'), 'c.png')}, content_type='multipart/form-data')
         self.assertEqual(junk.status_code, 400)
 
-        removed = self.client.delete('/admin/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE))
+        removed = self.client.delete('/edit/api/sounds/horn.mp3/cover', headers=dict(USER, **WRITE))
         self.assertFalse(removed.get_json()['sound']['has_cover'])
 
     def test_cover_crop_and_preview(self):
@@ -252,13 +252,13 @@ class AdminApiTests(unittest.TestCase):
         image.save(buffer, 'TIFF')  # not a browser format; converted on the server
         tiff = buffer.getvalue()
 
-        preview = self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE),
+        preview = self.client.post('/edit/api/image-preview', headers=dict(USER, **WRITE),
                                    data={'image': (io.BytesIO(tiff), 'c.tif')}, content_type='multipart/form-data')
         self.assertEqual(preview.status_code, 200)
         self.assertEqual(preview.mimetype, 'image/jpeg')
         self.assertEqual((preview.headers['X-Image-Width'], preview.headers['X-Image-Height']), ('400', '200'))
 
-        put = self.client.put('/admin/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
+        put = self.client.put('/edit/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
                               data={'cover': (io.BytesIO(tiff), 'c.tif'), 'crop': '0.5,0,0.5,1'},
                               content_type='multipart/form-data')
         self.assertEqual(put.status_code, 200, put.get_json())
@@ -269,42 +269,42 @@ class AdminApiTests(unittest.TestCase):
         r, g, b = cover.convert('RGB').getpixel((100, 100))
         self.assertTrue(b > 200 and r < 60, (r, g, b))
 
-        bad = self.client.put('/admin/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
+        bad = self.client.put('/edit/api/sounds/crop.mp3/cover', headers=dict(USER, **WRITE),
                               data={'cover': (io.BytesIO(tiff), 'c.tif'), 'crop': '0.9,0,0.5,1'},
                               content_type='multipart/form-data')
         self.assertEqual(bad.status_code, 400)
         self.assertIn('inside the image', bad.get_json()['error'])
-        junk = self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE),
+        junk = self.client.post('/edit/api/image-preview', headers=dict(USER, **WRITE),
                                 data={'image': (io.BytesIO(b'zzz'), 'x.heic')}, content_type='multipart/form-data')
         self.assertEqual(junk.status_code, 400)
-        self.assertEqual(self.client.post('/admin/api/image-preview', headers=dict(USER, **WRITE)).status_code, 400)
+        self.assertEqual(self.client.post('/edit/api/image-preview', headers=dict(USER, **WRITE)).status_code, 400)
 
     def test_page_offers_many_image_types(self):
-        page = self.client.get('/admin', headers=USER).get_data(as_text=True)
+        page = self.client.get('/edit', headers=USER).get_data(as_text=True)
         self.assertIn('.heic', page)
         self.assertIn('id="crop-modal"', page)
-        me = self.client.get('/admin/api/me', headers=USER).get_json()
+        me = self.client.get('/edit/api/me', headers=USER).get_json()
         self.assertEqual(me['cover']['aspect'], 1.0)
         self.assertIn('AVIF', me['cover']['formats'])
 
     def test_delete_trash_restore(self):
         self.upload(self.audio(440), 'bye.wav')
-        deleted = self.client.delete('/admin/api/sounds/bye.wav', headers=dict(USER, **WRITE))
+        deleted = self.client.delete('/edit/api/sounds/bye.wav', headers=dict(USER, **WRITE))
         self.assertEqual(deleted.status_code, 200)
         masked = deleted.get_json()['id']
         self.assertTrue(os.path.isfile(os.path.join(self.sounds, masked)))
 
-        trash = self.client.get('/admin/api/trash', headers=USER).get_json()
+        trash = self.client.get('/edit/api/trash', headers=USER).get_json()
         self.assertEqual([item['id'] for item in trash], [masked])
-        self.assertEqual(self.client.delete('/admin/api/sounds/bye.wav', headers=dict(USER, **WRITE)).status_code, 404)
+        self.assertEqual(self.client.delete('/edit/api/sounds/bye.wav', headers=dict(USER, **WRITE)).status_code, 404)
 
-        restored = self.client.post(f'/admin/api/trash/{masked}/restore', headers=dict(USER, **WRITE))
+        restored = self.client.post(f'/edit/api/trash/{masked}/restore', headers=dict(USER, **WRITE))
         self.assertEqual(restored.status_code, 200)
         self.assertEqual(restored.get_json()['name'], 'bye.wav')
-        self.assertEqual(self.client.get('/admin/api/trash', headers=USER).get_json(), [])
+        self.assertEqual(self.client.get('/edit/api/trash', headers=USER).get_json(), [])
 
     def test_me(self):
-        me = self.client.get('/admin/api/me', headers=USER).get_json()
+        me = self.client.get('/edit/api/me', headers=USER).get_json()
         self.assertEqual(me['user'], 'dj@example.org')
         self.assertFalse(me['jwt_verified'])
         self.assertEqual(me['extensions'], list(EXTENSIONS))
