@@ -11,7 +11,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 import cover_image
 import tag_writer
-from library import LibraryError, is_visible_name
+from library import LibraryError, is_visible_name, render_preview
 
 
 URL_PREFIX = '/edit'
@@ -146,6 +146,17 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
         action = 'removed the cover of' if data is None else 'set a new cover for'
         print(f"[ADMIN] {request.admin_user} {action} {name}")
         return jsonify({'sound': sound_info(name)})
+
+    @admin.route('/api/sounds/<path:name>/audio')
+    def audio(name):
+        """The sound as MP3, normalized like a channel play, for listening in
+        the browser. Does not play in the channel and does not count as a play."""
+        if not visible(name):
+            return error('sound not found', 404)
+        data = render_preview(library.path(name), library.playback_filter(name))
+        response = send_file(io.BytesIO(data), mimetype='audio/mpeg', conditional=True, max_age=0)
+        response.headers['Cache-Control'] = 'private, no-cache'
+        return response
 
     @admin.route('/api/sounds/<path:name>', methods=['DELETE'])
     def delete(name):

@@ -347,7 +347,7 @@
 
     <script>
         const API = {{ api_base|tojson }};
-        const FIELDS = [['title', 'TITLE'], ['artist', 'ARTIST'], ['album', 'ALBUM'], ['year', 'YEAR'], ['genre', 'GENRE'], ['tags', 'TAGS']];
+        const FIELDS = [['title', 'TITLE'], ['artist', 'ARTIST'], ['album', 'ALBUM'], ['tags', 'TAGS']];
         const coverVersion = {};   // name -> cache buster after a cover change
         let sounds = [];
 
@@ -428,7 +428,7 @@
                 const value = key === 'tags' ? (sound.tags || []).join(', ') : (sound[key] || '');
                 inputs[key] = el('input', {
                     id, class: 'input-retro', value, autocomplete: 'off', spellcheck: false,
-                    placeholder: key === 'tags' ? 'airhorn, meme, loud' : key === 'year' ? '1998' : '',
+                    placeholder: key === 'tags' ? 'airhorn, meme, loud' : '',
                     oninput: () => card.classList.add('dirty'),
                     onkeydown: e => { if (e.key === 'Enter') save(); },
                 });
@@ -456,7 +456,7 @@
                 el('div', { class: 'fields' }, fieldRows),
                 el('div', { class: 'actions' },
                     saveBtn,
-                    el('button', { type: 'button', title: 'Play in the channel', onclick: () => fetch(sound.play_url) }, '▶ PLAY'),
+                    el('button', { type: 'button', class: 'listen', title: 'Listen here in the browser (not in the channel, not counted)', onclick: e => togglePreview(sound.name, e.currentTarget) }, '▶ LISTEN'),
                     el('button', { type: 'button', disabled: !sound.has_cover, onclick: () => removeCover(sound.name) }, '✖ COVER'),
                     el('button', { type: 'button', class: 'delete', onclick: () => remove(sound.name) }, '🗑 DELETE')),
                 msg);
@@ -490,6 +490,47 @@
             return card;
         }
 
+        // Listening in the browser: one shared player, normalized like a channel play.
+        // It never reaches the channel and does not count as a play.
+        const player = new Audio();
+        let playerName = null, playerBtn = null;
+
+        function resetPreviewButton() {
+            if (playerBtn) playerBtn.textContent = '▶ LISTEN';
+            playerName = playerBtn = null;
+        }
+
+        function stopPreview() {
+            player.pause();
+            player.removeAttribute('src');
+            player.load();
+            resetPreviewButton();
+        }
+
+        function togglePreview(name, btn) {
+            const same = playerName === name;
+            stopPreview();
+            if (same) return;
+            playerName = name;
+            playerBtn = btn;
+            btn.textContent = '⏳ LOADING';
+            player.src = API + 'sounds/' + encodeURIComponent(name) + '/audio';
+            player.play().then(() => { if (playerBtn === btn) btn.textContent = '■ STOP'; })
+                .catch(err => {
+                    if (playerBtn !== btn) return;  // replaced by another sound meanwhile
+                    resetPreviewButton();
+                    if (err.name !== 'AbortError') alert('Could not play ' + name + ': ' + err.message);
+                });
+        }
+
+        player.addEventListener('ended', resetPreviewButton);
+        player.addEventListener('error', () => {
+            if (!playerName) return;
+            const name = playerName;
+            resetPreviewButton();
+            alert('Could not play ' + name + ' in the browser.');
+        });
+
         function cardOf(name) {
             return [...document.querySelectorAll('.card')].find(card => card.dataset.name === name);
         }
@@ -500,6 +541,10 @@
             const old = cardOf(sound.name);
             const fresh = buildCard(sound);
             if (old) old.replaceWith(fresh); else document.getElementById('cards').prepend(fresh);
+            if (playerName === sound.name) {  // keep the running preview attached to the new card
+                playerBtn = fresh.querySelector('.listen');
+                playerBtn.textContent = player.paused ? '⏳ LOADING' : '■ STOP';
+            }
             if (message) fresh.say(message, 'ok');
             applyFilter();
         }
@@ -865,6 +910,7 @@
             card.say('DELETING...', 'busy');
             try {
                 await api('DELETE', API + 'sounds/' + encodeURIComponent(name));
+                if (playerName === name) stopPreview();
                 sounds = sounds.filter(s => s.name !== name);
                 card.remove();
                 applyFilter();

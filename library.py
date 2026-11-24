@@ -88,6 +88,23 @@ def decodes_cleanly(path, seconds=5, timeout=60):
     return result.returncode == 0
 
 
+def render_preview(path, audio_filter=None, timeout=120):
+    """MP3 bytes of the sound as the channel would play it (same filter), for
+    listening in the browser. Raises LibraryError if ffmpeg fails."""
+    cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-i', path, '-map', '0:a:0', '-vn']
+    if audio_filter:
+        cmd += ['-af', audio_filter]
+    cmd += ['-c:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise LibraryError(f'could not render a preview: {e}', 500)
+    if result.returncode != 0 or not result.stdout:
+        detail = result.stderr.decode(errors='replace').strip().splitlines()[-1:] or ['no audio']
+        raise LibraryError(f'could not render a preview: {detail[0]}', 500)
+    return result.stdout
+
+
 def _parse_db(value):
     try:
         number = float(value)
