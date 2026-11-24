@@ -286,12 +286,13 @@ The `sounds` volume must be writable by UID 1000 for this. Play counts stay atta
 ### Caddy configuration (example: Pocket ID)
 
 caddy-security protects `/edit*`; everything else is proxied without login. The example uses
-[Pocket ID](https://pocket-id.org). Who may edit is decided by **one group**, here `wxbu.de`: no
-extra roles, mappings or realms are needed.
+[Pocket ID](https://pocket-id.org) and follows the usual caddy-security pattern: the portal answers
+under `/caddy-security/*`, and the policy sends people straight to the OIDC login there.
 
-**In Pocket ID:** create an OIDC client (confidential) for the soundboard and, on its access
-settings, allow only the group `wxbu.de`. Register this callback URL:
-`https://soundboard.example.com/auth/oauth2/soundboard_oidc/authorization-code-callback`.
+**In Pocket ID:** create an OIDC client (confidential) for the soundboard. In its access settings,
+allow only the group whose members may edit (e.g. `wxbu.de`). Register this callback URL, once for
+each host name the soundboard is reachable under:
+`https://soundboard.example.com/caddy-security/oauth2/soundboard_oidc/authorization-code-callback`.
 
 **In Caddy:**
 
@@ -303,20 +304,23 @@ settings, allow only the group `wxbu.de`. Register this callback URL:
 			driver generic
 			client_id {env.SOUNDBOARD_OIDC_CLIENT_ID}
 			client_secret {env.SOUNDBOARD_OIDC_CLIENT_SECRET}
-			scopes openid email profile groups
+			scopes openid email profile
 			metadata_url https://id.example.com/.well-known/openid-configuration
 		}
 
 		authentication portal soundboard {
 			crypto default token lifetime 3600
-			crypto key sign-verify {env.SOUNDBOARD_JWT_KEY}
 			enable identity provider soundboard_oidc
+			trust login redirect uri domain suffix soundboard.example.com path prefix /
+			transform user {
+				match realm soundboard_oidc
+				action add role user
+			}
 		}
 
 		authorization policy soundboard_edit {
-			set auth url https://soundboard.example.com/auth/
-			crypto key verify {env.SOUNDBOARD_JWT_KEY}
-			allow roles wxbu.de
+			set auth url /caddy-security/oauth2/soundboard_oidc
+			allow roles user
 			inject headers with claims
 		}
 	}
@@ -324,7 +328,10 @@ settings, allow only the group `wxbu.de`. Register this callback URL:
 
 soundboard.example.com {
 	route {
-		authenticate /auth/* with soundboard
+		@auth path /caddy-security/*
+		route @auth {
+			authenticate with soundboard
+		}
 		@edit path /edit /edit/*
 		route @edit {
 			# Drop anything a client sent itself; the policy sets the real values.
@@ -339,22 +346,28 @@ soundboard.example.com {
 
 How it fits together:
 
-- The `groups` scope makes Pocket ID send the user's group names (e.g. `wxbu.de`) in the `groups`
-  claim. caddy-security turns these into roles, so the policy checks `allow roles wxbu.de` directly.
-  Pocket ID's allowed groups already keep everyone else from logging in, so the policy is a second
-  lock on the same group.
+- **One path, three places.** The portal is mounted at `/caddy-security/*`. The policy's
+  `set auth url` points into it (`/caddy-security/oauth2/<realm>`), and the callback registered in
+  Pocket ID is below it. If these disagree, `/edit` ends in a 404 on the login redirect.
+- **Who may edit** is decided by Pocket ID's allowed groups: only members can log in at all. Every
+  successful login through this realm gets the role `user`, which the policy allows. To check the
+  group in Caddy as well, add `groups` to the scopes and use `allow roles wxbu.de` instead of the
+  transform and `allow roles user`.
 - `realm soundboard_oidc` is only caddy-security's internal name for this login. It appears in the
-  callback URL, and nothing needs to be created for it in Pocket ID.
+  auth URL and the callback URL. Nothing needs to be created for it in Pocket ID.
+- `trust login redirect uri` must cover every host name of the soundboard. Repeat the line for each
+  domain, otherwise logins on the other names are not sent back to `/edit`.
 - All names start with `soundboard`, so these blocks can be added next to an existing portal
-  without clashing. To reuse an existing portal instead, keep only the authorization policy and the
-  site block, and point `authenticate`, `set auth url` and the key at that portal.
-- Replace `id.example.com` with your Pocket ID address and `soundboard.example.com` with the
-  soundboard's. Set `SOUNDBOARD_JWT_KEY` to a long random string (e.g. `openssl rand -base64 48`).
-- If login works but `/edit` is refused, open `https://soundboard.example.com/auth/whoami`. It shows
-  the roles caddy-security received, which must include `wxbu.de`.
+  without clashing with it.
+- Without a `crypto key sign-verify` line, caddy-security signs logins with a key it generates at
+  start-up, so users must log in again after Caddy restarts. That is fine for
+  `ADMIN_AUTH=proxy`. Only when the app also verifies tokens itself (`ADMIN_JWT_KEY`, see below)
+  add `crypto key sign-verify {env.SOUNDBOARD_JWT_KEY}` to the portal and `crypto key verify
+  {env.SOUNDBOARD_JWT_KEY}` to the policy.
+- If login works but `/edit` is refused, open
+  `https://soundboard.example.com/caddy-security/whoami` to see the roles caddy-security received.
 
-Then start the soundboard with `ADMIN_AUTH=proxy`. That is all the app needs. `ADMIN_ROLES=wxbu.de`
-can be added to make the app check the group too, but Caddy already does.
+Then start the soundboard with `ADMIN_AUTH=proxy`. That is all the app needs.
 
 **Trust model.** With `ADMIN_AUTH=proxy` alone, the app trusts the identity header, like a File
 Browser in `noauth` mode behind the same proxy. That is only safe if the soundboard can be reached
