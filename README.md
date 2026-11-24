@@ -292,33 +292,33 @@ user on in `X-Token-User-Email` (`inject headers with claims`). Example with a g
 ```caddyfile
 {
 	security {
-		oauth identity provider generic {
-			realm generic
+		oauth identity provider soundboard_oidc {
+			realm soundboard_oidc
 			driver generic
-			client_id {env.OIDC_CLIENT_ID}
-			client_secret {env.OIDC_CLIENT_SECRET}
+			client_id {env.SOUNDBOARD_OIDC_CLIENT_ID}
+			client_secret {env.SOUNDBOARD_OIDC_CLIENT_SECRET}
 			scopes openid email profile
 			metadata_url https://id.example.com/.well-known/openid-configuration
 		}
 
-		authentication portal myportal {
+		authentication portal soundboard {
 			crypto default token lifetime 3600
-			crypto key sign-verify {env.JWT_SHARED_KEY}
-			enable identity provider generic
+			crypto key sign-verify {env.SOUNDBOARD_JWT_KEY}
+			enable identity provider soundboard_oidc
 			transform user {
-				match realm generic
+				match realm soundboard_oidc
 				action add role authp/user
 			}
 			transform user {
-				match realm generic
+				match realm soundboard_oidc
 				match role soundboard-admins
 				action add role authp/admin
 			}
 		}
 
-		authorization policy soundboard_admin {
+		authorization policy soundboard_edit {
 			set auth url https://soundboard.example.com/auth/
-			crypto key verify {env.JWT_SHARED_KEY}
+			crypto key verify {env.SOUNDBOARD_JWT_KEY}
 			allow roles authp/admin
 			inject headers with claims
 		}
@@ -327,12 +327,12 @@ user on in `X-Token-User-Email` (`inject headers with claims`). Example with a g
 
 soundboard.example.com {
 	route {
-		authenticate /auth/* with myportal
+		authenticate /auth/* with soundboard
 		@edit path /edit /edit/*
 		route @edit {
 			# Drop anything a client sent itself; the policy sets the real values.
 			request_header -X-Token-*
-			authorize with soundboard_admin
+			authorize with soundboard_edit
 			reverse_proxy soundboard:5000
 		}
 		reverse_proxy soundboard:5000
@@ -340,8 +340,13 @@ soundboard.example.com {
 }
 ```
 
-This is a sketch following the AuthCrunch docs. Keep your existing portal and identity provider
-blocks, and add only the policy and the `@edit` route.
+This is a sketch following the AuthCrunch docs. Every name starts with `soundboard`: portal
+`soundboard`, identity provider and realm `soundboard_oidc`, policy `soundboard_edit`, and the
+`SOUNDBOARD_*` env vars. The blocks can therefore be added next to an existing portal without
+clashing with it. The OAuth callback path contains the realm name
+(`…/auth/oauth2/soundboard_oidc/authorization-code-callback`), so register that as the redirect
+URI in your OIDC provider. To reuse an existing portal instead, keep only the authorization policy
+and the site block, and point `authenticate`, `set auth url` and the key at that portal.
 
 Then start the soundboard with `ADMIN_AUTH=proxy` (optionally `ADMIN_ROLES=authp/admin`).
 
@@ -349,7 +354,7 @@ Then start the soundboard with `ADMIN_AUTH=proxy` (optionally `ADMIN_ROLES=authp
 Browser in `noauth` mode behind the same proxy. That is only safe if the soundboard can be reached
 **through Caddy only**: do not publish port 5000 (`-p 5000:5000`). Put Caddy and the soundboard on a
 shared Docker network instead. If port 5000 must stay reachable, also set
-`ADMIN_JWT_KEY` to the same value as `JWT_SHARED_KEY`. The app then verifies the signature, expiry and
+`ADMIN_JWT_KEY` to the same value as `SOUNDBOARD_JWT_KEY`. The app then verifies the signature, expiry and
 user of caddy-security's access token (cookie `AUTHP_ACCESS_TOKEN` or `Authorization: Bearer`)
 itself. A forged header is then useless. Do not use `enable strip token` in the policy in that case,
 because the app needs to see the token. With RSA/ECDSA keys (`crypto key sign-verify from file …`)
