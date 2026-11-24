@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>~Soundboard 98~ ADMIN</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            background: #000000;
+            color: #00FF00;
+            font-family: "Courier New", Courier, monospace;
+            margin: 0;
+        }
+        a { color: #FFFF00; }
+        h1 { text-align: center; text-shadow: 2px 2px #FF0000; margin: 10px 0; }
+        h2 { font-size: 16px; margin: 0 0 10px; color: #FFFF00; }
+        .container { max-width: 1680px; margin: 0 auto; padding: 10px clamp(10px, 2vw, 24px) 40px; }
+
+        .bar {
+            border: 2px solid #00FF00;
+            background: #000080;
+            padding: 8px 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 20px;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        .bar b { color: #FFFFFF; }
+
+        .panel {
+            border: 2px solid #333;
+            background: #111;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        /* --- UPLOAD --- */
+        .dropzone {
+            display: block;
+            border: 3px dashed #00FF00;
+            background: #001100;
+            padding: 24px 12px;
+            text-align: center;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .dropzone.over { background: #003300; border-color: #FFFF00; color: #FFFF00; }
+        .dropzone input { display: none; }
+        .dropzone small { display: block; font-weight: normal; color: #C0C0C0; margin-top: 6px; }
+        .upload-log { list-style: none; margin: 10px 0 0; padding: 0; font-size: 12px; }
+        .upload-log li { padding: 2px 0; word-break: break-word; }
+        .ok { color: #00FF00; }
+        .warn { color: #FFFF00; }
+        .err { color: #FF5555; }
+        .busy { color: #00FFFF; }
+
+        /* --- LIBRARY --- */
+        .tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; font-size: 12px; }
+        .input-retro {
+            border: 2px inset #FFFFFF;
+            background: #FFFFFF;
+            color: #000000;
+            padding: 3px 5px;
+            font-family: inherit;
+            font-size: 12px;
+            box-sizing: border-box;
+            min-width: 0;
+        }
+        .tools .input-retro { width: min(100%, 360px); min-height: 30px; }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+            gap: 12px;
+        }
+        .card {
+            background: #C0C0C0;
+            color: #000000;
+            border-top: 2px solid #FFFFFF;
+            border-left: 2px solid #FFFFFF;
+            border-right: 2px solid #000000;
+            border-bottom: 2px solid #000000;
+            padding: 8px;
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            gap: 8px;
+            font-size: 12px;
+        }
+        .card.dirty { outline: 3px solid #FF00FF; }
+        .card[hidden] { display: none; }
+        .cover-btn {
+            padding: 0;
+            border: none;
+            background: none;
+            cursor: pointer;
+            position: relative;
+            align-self: start;
+        }
+        .cover-btn img {
+            width: 96px;
+            height: 96px;
+            object-fit: cover;
+            background: #000080;
+            border-top: 2px solid #808080;
+            border-left: 2px solid #808080;
+            border-right: 2px solid #FFFFFF;
+            border-bottom: 2px solid #FFFFFF;
+            box-sizing: border-box;
+            display: block;
+        }
+        .cover-btn img.no-cover { image-rendering: pixelated; }
+        .cover-btn span {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 128, 0.85);
+            color: #FFFFFF;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 2px 0;
+        }
+        .card-head { font-weight: bold; word-break: break-all; }
+        .card-loud { font-size: 10px; color: #000080; margin-top: 2px; }
+        .fields { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr; gap: 4px 6px; align-items: center; }
+        .fields label { font-size: 10px; font-weight: bold; text-align: right; }
+        .fields .input-retro { width: 100%; }
+        .actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
+        .actions button, .trash button {
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 11px;
+            padding: 4px 8px;
+            cursor: pointer;
+            background: #C0C0C0;
+            border: 2px outset #FFFFFF;
+        }
+        .actions button:active, .trash button:active { border-style: inset; }
+        .actions .save { background: #008000; color: #FFFFFF; border-color: #80FF80; }
+        .actions .delete { background: #FF0000; color: #FFFFFF; border-color: #FFCCCC; margin-left: auto; }
+        .actions button:disabled { opacity: 0.5; cursor: default; }
+        .card-msg { grid-column: 1 / -1; font-size: 11px; font-weight: bold; min-height: 13px; word-break: break-word; }
+        .card-msg.ok { color: #006000; }
+        .card-msg.err { color: #C00000; }
+        .card-msg.busy { color: #806000; }
+
+        /* --- TRASH --- */
+        .trash { list-style: none; padding: 0; margin: 0; font-size: 12px; }
+        .trash li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 4px 0; border-bottom: 1px dotted #333; }
+        .trash li span { word-break: break-all; }
+        .trash small { color: #808080; }
+        .empty { color: #808080; font-size: 12px; }
+
+        @media (max-width: 600px) {
+            .actions button { min-height: 40px; flex: 1 1 auto; }
+            .actions .delete { margin-left: 0; }
+            .tools .input-retro { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <marquee scrollamount="8"><b style="color:#FF00FF">*** SYSOP ACCESS GRANTED *** UPLOAD · TAG · COVER · DELETE ***</b></marquee>
+
+    <div class="container">
+        <h1>Soundboard 2000 · Admin</h1>
+
+        <div class="bar">
+            <span>👤 signed in as <b>{{ user }}</b></span>
+            <a href="{{ url_for('index') }}">[BACK TO SOUNDBOARD]</a>
+        </div>
+
+        <section class="panel">
+            <h2>📼 UPLOAD SOUNDS</h2>
+            <label class="dropzone" id="dropzone">
+                DROP FILES HERE OR CLICK TO CHOOSE
+                <input type="file" id="upload-input" multiple
+                       accept="{% for ext in extensions %}.{{ ext }},{% endfor %}audio/*">
+                <small>{{ extensions|join(', ')|upper }} · max {{ max_upload_mb }} MB each · the same audio is never stored twice</small>
+            </label>
+            <ul class="upload-log" id="upload-log"></ul>
+        </section>
+
+        <section class="panel">
+            <h2>💿 LIBRARY</h2>
+            <div class="tools">
+                <input type="search" id="filter" class="input-retro" placeholder="FILTER... or #tag" aria-label="Filter sounds" oninput="applyFilter()">
+                <span id="count"></span>
+                <span id="norm-info"></span>
+            </div>
+            <div class="cards" id="cards"><span class="empty">LOADING...</span></div>
+        </section>
+
+        <section class="panel">
+            <h2>🗑️ DELETED SOUNDS</h2>
+            <p class="empty" style="margin-top:0">Deleting only renames a file (<code>name.deleted-&lt;time&gt;</code>) so the soundboard ignores it. Nothing is erased: restore it here, or remove it from the disk yourself.</p>
+            <ul class="trash" id="trash"></ul>
+        </section>
+    </div>
+
+    <input type="file" id="cover-input" accept="image/*" hidden>
+
+    <script>
+        const FIELDS = [['title', 'TITLE'], ['artist', 'ARTIST'], ['album', 'ALBUM'], ['year', 'YEAR'], ['genre', 'GENRE'], ['tags', 'TAGS']];
+        const coverVersion = {};   // name -> cache buster after a cover change
+        let sounds = [];
+
+        // --- helpers ---------------------------------------------------------
+        function el(tag, props = {}, ...children) {
+            const node = document.createElement(tag);
+            Object.entries(props).forEach(([key, value]) => {
+                if (key === 'class') node.className = value;
+                else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+                else if (key in node) node[key] = value;
+                else node.setAttribute(key, value);
+            });
+            children.flat().forEach(child => node.append(child));
+            return node;
+        }
+
+        // Every state-changing call carries the header admin_auth requires.
+        async function api(method, url, body) {
+            const options = { method, headers: { 'X-Soundboard-Admin': '1' }, credentials: 'same-origin' };
+            if (body instanceof FormData) options.body = body;
+            else if (body !== undefined) {
+                options.body = JSON.stringify(body);
+                options.headers['Content-Type'] = 'application/json';
+            }
+            let response;
+            try {
+                response = await fetch(url, options);
+            } catch (e) {
+                throw new Error('SOUNDBOARD UNREACHABLE');
+            }
+            const type = response.headers.get('Content-Type') || '';
+            if (!type.includes('application/json')) {
+                // Caddy answers an expired login with its sign-in page
+                throw new Error(response.redirected || response.status === 401
+                    ? 'SESSION EXPIRED – RELOAD THE PAGE TO SIGN IN AGAIN' : `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                const error = new Error(data.error || `HTTP ${response.status}`);
+                error.data = data;
+                throw error;
+            }
+            return data;
+        }
+
+        function formatLoudness(loud) {
+            if (!loud) return '';
+            switch (loud.status) {
+                case 'analyzed': {
+                    const gain = loud.gain_db > 0 ? '+' + loud.gain_db.toFixed(1) : loud.gain_db.toFixed(1);
+                    return `🔊 ${loud.lufs.toFixed(1)} LUFS · peak ${loud.true_peak === null ? '?' : loud.true_peak.toFixed(1)} dBTP · plays at ${gain} dB${loud.limiter ? ' + limiter' : ''}`;
+                }
+                case 'silent': return '🔇 silent – played unchanged';
+                case 'pending': return '⏳ loudness analysis pending – plays unchanged until done';
+                case 'failed': return '⚠️ loudness analysis failed – plays unchanged';
+                case 'unreadable': return '⚠️ ffmpeg cannot read this file';
+            }
+            return '';
+        }
+
+        function normalizeTag(raw) {
+            return raw.replace(/^#+/, '').trim().toLowerCase().split(/\s+/).join('-');
+        }
+
+        // --- library cards ---------------------------------------------------
+        function coverSrc(sound) {
+            const v = coverVersion[sound.name];
+            return sound.cover_url + '?size=192' + (v ? '&v=' + v : '');
+        }
+
+        function buildCard(sound) {
+            const msg = el('div', { class: 'card-msg' });
+            const img = el('img', { alt: '', width: 96, height: 96, loading: 'lazy', src: coverSrc(sound) });
+            img.classList.toggle('no-cover', !sound.has_cover);
+            const inputs = {};
+            const fieldRows = FIELDS.map(([key, label]) => {
+                const id = 'f-' + key + '-' + Math.random().toString(36).slice(2);
+                const value = key === 'tags' ? (sound.tags || []).join(', ') : (sound[key] || '');
+                inputs[key] = el('input', {
+                    id, class: 'input-retro', value, autocomplete: 'off', spellcheck: false,
+                    placeholder: key === 'tags' ? 'airhorn, meme, loud' : key === 'year' ? '1998' : '',
+                    oninput: () => card.classList.add('dirty'),
+                    onkeydown: e => { if (e.key === 'Enter') save(); },
+                });
+                return [el('label', { htmlFor: id }, label), inputs[key]];
+            });
+
+            const saveBtn = el('button', { type: 'button', class: 'save', onclick: () => save() }, '💾 SAVE');
+            const card = el('div', { class: 'card' },
+                el('button', { type: 'button', class: 'cover-btn', title: 'Choose a new cover image',
+                               onclick: () => chooseCover(sound.name) }, img, el('span', {}, 'NEW COVER')),
+                el('div', {},
+                    el('div', { class: 'card-head' }, '💿 ' + sound.name),
+                    el('div', { class: 'card-loud' }, formatLoudness(sound.loudness)),
+                    el('div', { class: 'card-loud' }, `${sound.duration ? sound.duration.toFixed(1) + ' s · ' : ''}played ${sound.count}×`)),
+                el('div', { class: 'fields' }, fieldRows),
+                el('div', { class: 'actions' },
+                    saveBtn,
+                    el('button', { type: 'button', title: 'Play in the channel', onclick: () => fetch(sound.play_url) }, '▶ PLAY'),
+                    el('button', { type: 'button', disabled: !sound.has_cover, onclick: () => removeCover(sound.name) }, '✖ COVER'),
+                    el('button', { type: 'button', class: 'delete', onclick: () => remove(sound.name) }, '🗑 DELETE')),
+                msg);
+            card.dataset.name = sound.name;
+            card.dataset.search = [sound.name, sound.title, sound.artist, sound.album, sound.genre, sound.year, ...(sound.tags || [])]
+                .filter(Boolean).join(' ').toLowerCase();
+            card.dataset.tags = (sound.tags || []).join(' ');
+
+            function say(text, cls) {
+                msg.textContent = text;
+                msg.className = 'card-msg' + (cls ? ' ' + cls : '');
+            }
+            card.say = say;
+
+            async function save() {
+                const body = {};
+                FIELDS.forEach(([key]) => {
+                    const value = inputs[key].value.trim();
+                    body[key] = key === 'tags' ? value.split(/[,;]/).map(t => t.trim()).filter(Boolean) : value;
+                });
+                saveBtn.disabled = true;
+                say('SAVING...', 'busy');
+                try {
+                    const data = await api('PATCH', '/admin/api/sounds/' + encodeURIComponent(sound.name), body);
+                    replaceSound(data.sound, 'SAVED ✔');
+                } catch (e) {
+                    say('ERROR: ' + e.message, 'err');
+                    saveBtn.disabled = false;
+                }
+            }
+            return card;
+        }
+
+        function cardOf(name) {
+            return [...document.querySelectorAll('.card')].find(card => card.dataset.name === name);
+        }
+
+        function replaceSound(sound, message) {
+            const index = sounds.findIndex(s => s.name === sound.name);
+            if (index >= 0) sounds[index] = sound; else sounds.push(sound);
+            const old = cardOf(sound.name);
+            const fresh = buildCard(sound);
+            if (old) old.replaceWith(fresh); else document.getElementById('cards').prepend(fresh);
+            if (message) fresh.say(message, 'ok');
+            applyFilter();
+        }
+
+        function renderCards() {
+            const box = document.getElementById('cards');
+            box.replaceChildren(...sounds.map(buildCard));
+            if (!sounds.length) box.append(el('span', { class: 'empty' }, 'NO SOUNDS YET – UPLOAD SOME ABOVE'));
+            applyFilter();
+        }
+
+        function applyFilter() {
+            const tokens = document.getElementById('filter').value.toLowerCase().split(/\s+/).filter(Boolean);
+            const words = tokens.filter(t => !(t.startsWith('#') && t.length > 1));
+            const tags = tokens.filter(t => t.startsWith('#') && t.length > 1).map(normalizeTag);
+            let shown = 0;
+            document.querySelectorAll('.card').forEach(card => {
+                const own = card.dataset.tags ? card.dataset.tags.split(' ') : [];
+                card.hidden = !(words.every(w => card.dataset.search.includes(w)) && tags.every(t => own.includes(t)));
+                if (!card.hidden) shown++;
+            });
+            document.getElementById('count').textContent = `${shown} / ${sounds.length} SOUNDS`;
+        }
+
+        async function loadSounds() {
+            try {
+                const response = await fetch('/meta');
+                sounds = await response.json();
+                renderCards();
+            } catch (e) {
+                document.getElementById('cards').replaceChildren(el('span', { class: 'err' }, 'COULD NOT LOAD SOUNDS'));
+            }
+        }
+
+        // --- covers ----------------------------------------------------------
+        let coverTarget = null;
+        function chooseCover(name) {
+            coverTarget = name;
+            const input = document.getElementById('cover-input');
+            input.value = '';
+            input.click();
+        }
+
+        document.getElementById('cover-input').addEventListener('change', async event => {
+            const file = event.target.files[0];
+            const name = coverTarget;
+            if (!file || !name) return;
+            const card = cardOf(name);
+            card && card.say('UPLOADING COVER...', 'busy');
+            const form = new FormData();
+            form.append('cover', file);
+            try {
+                const data = await api('PUT', '/admin/api/sounds/' + encodeURIComponent(name) + '/cover', form);
+                coverVersion[name] = Date.now();
+                replaceSound(data.sound, 'COVER SAVED ✔');
+            } catch (e) {
+                card && card.say('ERROR: ' + e.message, 'err');
+            }
+        });
+
+        async function removeCover(name) {
+            if (!confirm(`Remove the cover image embedded in "${name}"?`)) return;
+            const card = cardOf(name);
+            card.say('REMOVING COVER...', 'busy');
+            try {
+                const data = await api('DELETE', '/admin/api/sounds/' + encodeURIComponent(name) + '/cover');
+                coverVersion[name] = Date.now();
+                replaceSound(data.sound, 'COVER REMOVED ✔');
+            } catch (e) {
+                card.say('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        // --- delete / restore ------------------------------------------------
+        async function remove(name) {
+            if (!confirm(`Delete "${name}"?\n\nThe file is only renamed and can be restored below.`)) return;
+            const card = cardOf(name);
+            card.say('DELETING...', 'busy');
+            try {
+                await api('DELETE', '/admin/api/sounds/' + encodeURIComponent(name));
+                sounds = sounds.filter(s => s.name !== name);
+                card.remove();
+                applyFilter();
+                loadTrash();
+            } catch (e) {
+                card.say('ERROR: ' + e.message, 'err');
+            }
+        }
+
+        async function loadTrash() {
+            const list = document.getElementById('trash');
+            try {
+                const items = await api('GET', '/admin/api/trash');
+                list.replaceChildren(...items.map(item => {
+                    const status = el('small');
+                    const button = el('button', { type: 'button', onclick: () => restore(item.id, button, status) }, '↩ RESTORE');
+                    return el('li', {}, el('span', {}, '💿 ' + item.name),
+                              el('small', {}, 'deleted ' + new Date(item.deleted_at).toLocaleString()), button, status);
+                }));
+                if (!items.length) list.append(el('li', { class: 'empty' }, 'NOTHING DELETED'));
+            } catch (e) {
+                list.replaceChildren(el('li', { class: 'err' }, 'ERROR: ' + e.message));
+            }
+        }
+
+        async function restore(id, button, status) {
+            button.disabled = true;
+            try {
+                const data = await api('POST', '/admin/api/trash/' + encodeURIComponent(id) + '/restore');
+                if (data.sound) replaceSound(data.sound, 'RESTORED ✔');
+                loadTrash();
+            } catch (e) {
+                status.textContent = 'ERROR: ' + e.message;
+                status.className = 'err';
+                button.disabled = false;
+            }
+        }
+
+        // --- uploads ---------------------------------------------------------
+        async function uploadFiles(files) {
+            const log = document.getElementById('upload-log');
+            // One at a time: keeps the server's duplicate check simple and the log in order
+            for (const file of files) {
+                const line = el('li', { class: 'busy' }, `⏳ ${file.name} – uploading...`);
+                log.prepend(line);
+                const form = new FormData();
+                form.append('file', file);
+                try {
+                    const data = await api('POST', '/admin/api/upload', form);
+                    line.className = 'ok';
+                    line.textContent = `✔ ${file.name} – added` + (data.name !== file.name ? ` as "${data.name}"` : '');
+                    if (data.sound) replaceSound(data.sound);
+                } catch (e) {
+                    const duplicate = e.data && e.data.existing;
+                    line.className = duplicate ? 'warn' : 'err';
+                    line.textContent = duplicate
+                        ? `⚠ ${file.name} – skipped, the same audio is already in the library as "${e.data.existing}"`
+                        : `✖ ${file.name} – ${e.message}`;
+                }
+            }
+        }
+
+        const dropzone = document.getElementById('dropzone');
+        document.getElementById('upload-input').addEventListener('change', event => {
+            uploadFiles([...event.target.files]);
+            event.target.value = '';
+        });
+        ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
+            event.preventDefault();
+            dropzone.classList.add('over');
+        }));
+        ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, () => dropzone.classList.remove('over')));
+        dropzone.addEventListener('drop', event => {
+            event.preventDefault();
+            uploadFiles([...event.dataTransfer.files]);
+        });
+
+        // --- start -----------------------------------------------------------
+        api('GET', '/admin/api/me').then(me => {
+            const n = me.normalization;
+            document.getElementById('norm-info').textContent = n.enabled
+                ? `NORMALIZING TO ${n.target_lufs} LUFS (max +${n.max_gain_db} dB, peaks ≤ ${n.peak_ceiling_db} dBTP)`
+                : 'NORMALIZATION OFF';
+        }).catch(() => {});
+        loadSounds();
+        loadTrash();
+        // Pick up finished loudness analyses without losing unsaved edits
+        setInterval(async () => {
+            if (document.hidden || document.querySelector('.card.dirty')) return;
+            if (!sounds.some(s => s.loudness && s.loudness.status === 'pending')) return;
+            try {
+                const fresh = await (await fetch('/meta')).json();
+                fresh.forEach(sound => {
+                    const old = sounds.find(s => s.name === sound.name);
+                    if (old && old.loudness.status === 'pending' && sound.loudness.status !== 'pending') replaceSound(sound);
+                });
+            } catch (e) { /* try again later */ }
+        }, 5000);
+    </script>
+</body>
+</html>

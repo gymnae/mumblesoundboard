@@ -17,6 +17,9 @@ PyYAML
 mutagen
 # Renders the artwork camera image the Schnackn bots publish (needs load_default(size)).
 Pillow>=10.1
+# Optional verification of caddy-security access tokens for the /admin area
+# (ADMIN_JWT_KEY / ADMIN_JWT_PUBLIC_KEY_FILE); [crypto] adds RSA/ECDSA/Ed25519.
+PyJWT[crypto]>=2.8
 
 # NOTE: pymumble/opuslib hard-pin protobuf==3.12.2 in their metadata, while
 # current LiveKit requires protobuf >=5. The Dockerfile installs the legacy

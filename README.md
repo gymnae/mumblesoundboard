@@ -19,7 +19,10 @@ A turnkey, lightweight, and secure Dockerized soundboard solution that connects 
     * Global Stop Button (Kill switch).
     * "ON AIR" visual indicator.
     * **Search-as-you-type:** Instantly filter the soundboard grid by typing (also matches artist/title tags).
+    * **Tag search:** Sounds carry keyword tags (`#meme`, `#loud`, …). Click a tag or type `#tag` to filter.
 * **Cover Art Tiles:** Each sound tile shows the cover embedded in the file's tags, or a pixel-art vinyl fallback when there is none.
+* **Loudness Normalization:** Every sound button plays at the same perceived loudness (EBU R128), without added latency.
+* **Admin Area (behind your SSO):** Upload sounds (duplicates are rejected by audio fingerprint), edit tags and covers, and delete sounds. Deleted sounds are only renamed, so they can be restored. Login is handled by [caddy-security](https://github.com/greenpau/caddy-security) with OIDC.
 * **Statistics:** Tracks play counts for both local files and YouTube links in a persistent SQLite database.
 * **Security Hardened:** Runs as a non-root user (UID 1000) inside the container with read-only root filesystem access.
 
@@ -65,6 +68,7 @@ docker run -d \
   -e INVIDIOUS_USER="optional_user" \
   -e INVIDIOUS_PASS="optional_pass" \
   -e ALLOWED_EXTENSIONS="mp3,wav,m4a,ogg" \
+  -e ADMIN_AUTH=proxy \
   ghcr.io/YOUR_USERNAME/YOUR_REPO:latest
 ```
 
@@ -100,6 +104,21 @@ Open your browser and navigate to: http://your-server-ip:5000
 |LIVEKIT_ICE_USERNAME |	None |	TURN username (not needed when using LIVEKIT_ICE_SECRET).|
 |LIVEKIT_ICE_CREDENTIAL |	None |	TURN password.|
 |LIVEKIT_ICE_SECRET |	None |	TURN static auth secret (coturn `use-static-auth`). The bot generates ephemeral credentials automatically.|
+|ALLOWED_EXTENSIONS |	mp3,wav,m4a,ogg |	File types that are listed, playable and accepted as uploads (matched case-insensitively).|
+|NORMALIZE |	1 |	Set to `0` to play sound buttons at their original level.|
+|NORMALIZE_TARGET_LUFS |	-16 |	Integrated loudness every sound button is brought to.|
+|NORMALIZE_MAX_GAIN_DB |	12 |	Largest boost for quiet sounds (cuts are not limited).|
+|NORMALIZE_PEAK_DBTP |	-1 |	Peak ceiling. A limiter is added only when a boost would push peaks above it.|
+|LIBRARY_SCAN_INTERVAL |	300 |	Seconds between scans of the sounds folder for files added or changed outside the admin area (minimum 10).|
+|ADMIN_AUTH |	off |	`proxy` enables the `/admin` area and trusts the identity header from caddy-security. With `off`, everything under `/admin` answers 404.|
+|ADMIN_USER_HEADER |	X-Token-User-Email |	Header carrying the signed-in user.|
+|ADMIN_ROLES_HEADER |	X-Token-User-Roles |	Header carrying the user's roles (space-separated).|
+|ADMIN_ROLES |	None |	Comma-separated roles; when set, the user needs at least one of them.|
+|ADMIN_JWT_KEY |	None |	The shared key of caddy-security's `crypto key sign-verify`. When set, the app also verifies the access token itself.|
+|ADMIN_JWT_PUBLIC_KEY_FILE |	None |	Alternative to `ADMIN_JWT_KEY`: PEM public key for RSA/ECDSA/Ed25519-signed tokens.|
+|ADMIN_JWT_COOKIE |	AUTHP_ACCESS_TOKEN,access_token,jwt_access_token |	Cookie name(s) to read the access token from (a `Bearer` header also works).|
+|ADMIN_JWT_AUDIENCE / ADMIN_JWT_ISSUER |	None |	Require these `aud` / `iss` claims in the token.|
+|MAX_UPLOAD_MB |	50 |	Largest accepted upload per file.|
 
 ## Audio quality and reliability diagnostics
 
@@ -160,7 +179,8 @@ The same data is available over plain GET endpoints, alongside `GET /play/<file>
   Missing tags are `null`; `duration` is in seconds.
 - `GET /cover/<file>` — the embedded image (JPEG/PNG/…), or the generic SVG fallback if the file has
   none. The `X-Cover-Source` response header is `embedded` or `default`. Responses carry an ETag and
-  are cacheable for an hour. Add `?size=N` (16–1024) to get the image scaled to fit N×N pixels, which
+  are revalidated on every use (covers can change in the admin area), so an unchanged cover costs
+  only a `304 Not Modified`. Add `?size=N` (16–1024) to get the image scaled to fit N×N pixels, which
   is useful for clients that store it, such as Bitfocus Companion buttons (`?size=72`). Covers are
   only scaled down. Opaque covers come back as JPEG and transparent ones as PNG. With a size, the
   fallback is a PNG of the pixel-art vinyl instead of the SVG.
@@ -190,6 +210,157 @@ current stream's thumbnail (or the generic cover, with `X-Cover-Source: default`
 are fetched only through `INVIDIOUS_HOST`, with the same credentials and Google-avoiding URL rewrite
 as the audio, so the browser never contacts YouTube either. Other links played via yt-dlp have no
 thumbnail.
+
+### Tags and search
+
+Besides title/artist/album/year/genre, every sound can carry keyword **tags**. They are stored in the
+file itself, in a custom multi-value field named `SOUNDBOARD_TAGS` (ID3 `TXXX`, MP4 freeform atom
+`----:com.apple.iTunes:SOUNDBOARD_TAGS`, or a Vorbis comment for Ogg/Opus/FLAC). The library
+therefore keeps them when it is copied elsewhere. Tags are lower case and contain no spaces
+(`Star Wars` becomes `star-wars`). Edit them in the admin area or with any tag editor.
+
+The main page lists all tags above the grid and on each tile. The search box accepts words, which must
+all appear in the name, tags or other fields, and `#tag`, which needs exactly that tag. Clicking a
+tag toggles it in the search. The search is kept in the address (`/?q=%23meme`) so it can be bookmarked.
+The same search is available to API clients:
+
+- `GET /meta?q=<words and #tags>&tag=<tag>` — `tag` can be repeated; all conditions must match.
+- `GET /tags` — `[{"tag": "meme", "count": 12}, …]`, most used first.
+
+Every record in `/meta` also has a `tags` list and a `loudness` object (see below).
+
+### Loudness normalization
+
+Every sound button is played at the same perceived loudness, `NORMALIZE_TARGET_LUFS` (−16 LUFS by
+default). A background thread measures each file once with ffmpeg's EBU R128 `loudnorm` analysis
+(integrated loudness and true peak). Clips shorter than the 0.4 s measuring window are looped for the
+measurement. Playback then applies a single static gain (`-af volume=…dB`). That keeps each sound's
+own dynamics and adds no delay. Real-time `loudnorm` would hold back the first 3 s of every sound,
+which is unusable for a soundboard. Boosts are capped at `NORMALIZE_MAX_GAIN_DB`. A peak limiter is
+added only if a boost would push the peaks above `NORMALIZE_PEAK_DBTP`.
+
+Results are stored per audio fingerprint in `data/library.db`, so retagging or renaming a file
+needs no new analysis. Until a new file has been analyzed (usually seconds after upload), it plays
+unchanged. Files dropped into `sounds/` by hand are found by the periodic scan
+(`LIBRARY_SCAN_INTERVAL`) or the first time they are played. `GET /meta` shows the result:
+
+```json
+"loudness": {"status": "analyzed", "lufs": -21.8, "true_peak": -18.5, "gain_db": 5.77, "limiter": false}
+```
+
+`status` is `pending`, `analyzed`, `silent`, `failed` or `unreadable`. YouTube and other web streams
+are not normalized: streaming services already level their audio. Use the BGM volume slider for them.
+
+## 🔐 Admin area: upload, tags, covers, delete
+
+`/admin` is the maintenance page. It is enabled with `ADMIN_AUTH=proxy` and is meant to sit behind
+[caddy-security](https://github.com/greenpau/caddy-security) (AuthCrunch), which performs the
+OIDC login. The rest of the soundboard (playing, search, `/meta`, …) stays public.
+
+* **Upload** one or many files (drag & drop). Allowed are `ALLOWED_EXTENSIONS` up to
+  `MAX_UPLOAD_MB`. Every upload must decode with ffmpeg. File names are cleaned (no paths, no
+  hidden names). A different sound with the same name gets a ` (2)` suffix.
+* **Duplicates are rejected** with the name of the existing sound. The check compares a SHA-256
+  fingerprint of the file's *audio packets* (`ffmpeg -c copy -f hash`), not the file bytes. The same
+  recording is therefore recognized even when its tags, cover or file name differ. Files added to the
+  folder by hand are fingerprinted before the check.
+* **Edit** title, artist, album, year, genre and tags, **set or remove the cover** (images are shrunk
+  to at most 1000 px). Changes are written into the file on a copy that then replaces the original
+  atomically. A sound that is playing is not disturbed, and a failed write leaves the file untouched.
+* **Delete** never erases anything. The file is renamed to
+  `<name>.deleted-<UTC time>` (e.g. `airhorn.mp3.deleted-20261124T101500Z`). That name no longer ends
+  in an allowed extension, so the soundboard ignores it everywhere, including `/play`. The admin page
+  lists deleted sounds with a **restore** button. To free the disk space, remove those files yourself.
+
+The `sounds` volume must be writable by UID 1000 for this. Play counts stay attached to the name.
+
+### Caddy configuration
+
+caddy-security protects `/admin*`; everything else is proxied without login. The policy passes the
+user on in `X-Token-User-Email` (`inject headers with claims`). Example with a generic OIDC provider
+(Keycloak, Authentik, Pocket ID, …) whose `soundboard-admins` group may administer the board:
+
+```caddyfile
+{
+	security {
+		oauth identity provider generic {
+			realm generic
+			driver generic
+			client_id {env.OIDC_CLIENT_ID}
+			client_secret {env.OIDC_CLIENT_SECRET}
+			scopes openid email profile
+			metadata_url https://id.example.com/.well-known/openid-configuration
+		}
+
+		authentication portal myportal {
+			crypto default token lifetime 3600
+			crypto key sign-verify {env.JWT_SHARED_KEY}
+			enable identity provider generic
+			transform user {
+				match realm generic
+				action add role authp/user
+			}
+			transform user {
+				match realm generic
+				match role soundboard-admins
+				action add role authp/admin
+			}
+		}
+
+		authorization policy soundboard_admin {
+			set auth url https://soundboard.example.com/auth/
+			crypto key verify {env.JWT_SHARED_KEY}
+			allow roles authp/admin
+			inject headers with claims
+		}
+	}
+}
+
+soundboard.example.com {
+	route {
+		authenticate /auth/* with myportal
+		@admin path /admin /admin/*
+		route @admin {
+			# Drop anything a client sent itself; the policy sets the real values.
+			request_header -X-Token-*
+			authorize with soundboard_admin
+			reverse_proxy soundboard:5000
+		}
+		reverse_proxy soundboard:5000
+	}
+}
+```
+
+This is a sketch following the AuthCrunch docs. Keep your existing portal and identity provider
+blocks, and add only the policy and the `@admin` route.
+
+Then start the soundboard with `ADMIN_AUTH=proxy` (optionally `ADMIN_ROLES=authp/admin`).
+
+**Trust model.** With `ADMIN_AUTH=proxy` alone, the app trusts the identity header, like a File
+Browser in `noauth` mode behind the same proxy. That is only safe if the soundboard can be reached
+**through Caddy only**: do not publish port 5000 (`-p 5000:5000`). Put Caddy and the soundboard on a
+shared Docker network instead. If port 5000 must stay reachable, also set
+`ADMIN_JWT_KEY` to the same value as `JWT_SHARED_KEY`. The app then verifies the signature, expiry and
+user of caddy-security's access token (cookie `AUTHP_ACCESS_TOKEN` or `Authorization: Bearer`)
+itself. A forged header is then useless. Do not use `enable strip token` in the policy in that case,
+because the app needs to see the token. With RSA/ECDSA keys (`crypto key sign-verify from file …`)
+use `ADMIN_JWT_PUBLIC_KEY_FILE` instead.
+
+State-changing admin requests must also send the header `X-Soundboard-Admin: 1`, which the admin
+page does. Other websites cannot add it to requests made with the user's login cookie.
+
+**Admin API** (all JSON; errors are `{"error": "…"}` with a matching status code):
+
+- `POST /admin/api/upload` — multipart field `file`. `201 {"name", "sound"}`; `409 {"error", "existing"}`
+  for a duplicate; `413` too large; `415` not an allowed/playable audio file.
+- `PATCH /admin/api/sounds/<file>` — JSON with any of `title`, `artist`, `album`, `year`, `genre`
+  (empty string or `null` removes it) and `tags` (list). Returns `{"sound"}`.
+- `PUT /admin/api/sounds/<file>/cover` — multipart field `cover` (JPEG/PNG/GIF/WebP);
+  `DELETE` removes all embedded pictures.
+- `DELETE /admin/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
+- `GET /admin/api/trash` — deleted sounds; `POST /admin/api/trash/<id>/restore` brings one back
+  (`409` if the name is taken again or the same audio was uploaded since).
+- `GET /admin/api/me` — signed-in user and the upload/normalization settings.
 
 ## 📺 Schnackn / LiveKit Session Integration
 
@@ -496,7 +667,9 @@ This application implements a strict proxying policy. If INVIDIOUS_HOST is confi
 
     Downloader: yt-dlp (configured for API-based stream resolution).
 
-    Database: SQLite3.
+    Database: SQLite3 (play counts; audio fingerprints and loudness in data/library.db).
+
+    Tags: mutagen (read and write), Pillow (cover images).
 
     Frontend: HTML5/CSS3`(Retro Table Layout).
 

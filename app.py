@@ -23,6 +23,10 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 import pymumble_py3 as pymumble
 
 from sound_metadata import MetadataCache, sniff_mime
+from library import SoundLibrary, is_visible_name
+from admin_auth import AdminAuth
+from admin import create_admin_blueprint
+import sound_search
 from audio_quality import (
     BYTES_PER_FRAME,
     FRAME_DURATION_SECONDS,
@@ -80,7 +84,20 @@ DB_PATH = os.path.join(DATA_DIR, "stats.db")
 os.makedirs(SOUNDS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
+def env_flag(name, default):
+    return os.getenv(name, default).strip().lower() not in ('0', 'false', 'no', 'off', '')
+
+# --- LIBRARY: upload limit and playback loudness normalization ---
+MAX_UPLOAD_MB = max(1, int(os.getenv("MAX_UPLOAD_MB", "50")))
+NORMALIZE = env_flag("NORMALIZE", "1")
+NORMALIZE_TARGET_LUFS = float(os.getenv("NORMALIZE_TARGET_LUFS", "-16"))
+NORMALIZE_MAX_GAIN_DB = max(0.0, float(os.getenv("NORMALIZE_MAX_GAIN_DB", "12")))
+NORMALIZE_PEAK_DBTP = min(0.0, float(os.getenv("NORMALIZE_PEAK_DBTP", "-1")))
+LIBRARY_SCAN_INTERVAL = max(10.0, float(os.getenv("LIBRARY_SCAN_INTERVAL", "300")))
+
 app = Flask(__name__)
+# Room for one upload plus the multipart envelope; the library enforces the exact limit.
+app.config['MAX_CONTENT_LENGTH'] = (MAX_UPLOAD_MB + 1) * 1024 * 1024
 
 # --- SSL PATCH ---
 if not hasattr(ssl, 'wrap_socket'):
@@ -270,7 +287,8 @@ class AudioEngine:
             oldest = self.active_processes.pop(0)
             self._kill_process(oldest)
 
-    def play_file(self, filepath, filename):
+    def play_file(self, filepath, filename, audio_filter=None):
+        """audio_filter: optional ffmpeg -af chain (loudness normalization)."""
         self.current_metadata = {'type': 'file', 'text': filename, 'link': None}
         
         with self.lock:
@@ -284,7 +302,10 @@ class AudioEngine:
 
             self._cleanup_dead_and_limit()
 
-            cmd = ['ffmpeg', '-re', '-i', filepath, '-f', 's16le', '-ac', '1', '-ar', '48000', '-']
+            cmd = ['ffmpeg', '-re', '-i', filepath]
+            if audio_filter:
+                cmd += ['-af', audio_filter]
+            cmd += ['-f', 's16le', '-ac', '1', '-ar', '48000', '-']
             self._start_process_internal(cmd, source_type='local', tag_filename=filename)
 
     def _stop_existing_remote(self):
@@ -697,13 +718,8 @@ def handle_matrix_command(command, argument):
             if not play_external(argument):
                 return "Could not resolve stream."
             return "Loading stream..."
-        if '..' in argument or argument.startswith('/'):
-            return "Invalid filename."
-        sound_path = os.path.join(SOUNDS_DIR, argument)
-        if not os.path.isfile(sound_path):
+        if not play_sound(argument):
             return "File not found in sounds directory."
-        audio_engine.play_file(sound_path, argument)
-        update_stat(argument)
         return f"Playing: {argument}"
 
 from matrix_bot import MatrixAppService
@@ -755,20 +771,42 @@ sound_metadata = MetadataCache()
 def allowed_extensions():
     return tuple(os.environ.get("ALLOWED_EXTENSIONS", "mp3,wav,m4a,ogg").split(','))
 
+library = SoundLibrary(
+    SOUNDS_DIR, os.path.join(DATA_DIR, "library.db"), allowed_extensions,
+    normalize=NORMALIZE, target_lufs=NORMALIZE_TARGET_LUFS, max_gain_db=NORMALIZE_MAX_GAIN_DB,
+    peak_ceiling_db=NORMALIZE_PEAK_DBTP, scan_interval=LIBRARY_SCAN_INTERVAL,
+)
+library.start()
+admin_auth = AdminAuth()
+
 def list_sounds():
-    if not os.path.exists(SOUNDS_DIR):
-        return []
-    return sorted(f for f in os.listdir(SOUNDS_DIR) if f.endswith(allowed_extensions()))
+    return library.visible_names()
 
 def resolve_sound(filename):
-    """Absolute path of a playable file inside SOUNDS_DIR, or None."""
-    if ".." in filename or filename.startswith("/") or not filename.endswith(allowed_extensions()):
+    """Absolute path of a playable file inside SOUNDS_DIR, or None. Hidden
+    names (uploads in progress) and masked deletes are never playable."""
+    parts = filename.replace('\\', '/').split('/')
+    if any(not part or part.startswith('.') for part in parts):
         return None
-    path = os.path.join(SOUNDS_DIR, filename)
+    if not is_visible_name(parts[-1], library.extensions()):
+        return None
+    path = os.path.join(SOUNDS_DIR, *parts)
     return path if os.path.isfile(path) else None
 
-def sound_info(filename, path, count=0):
+def play_sound(filename):
+    """Start a sound button, normalized to the library's loudness target. False if unknown."""
+    path = resolve_sound(filename)
+    if not path:
+        return False
+    audio_engine.play_file(path, filename, audio_filter=library.playback_filter(filename))
+    update_stat(filename)
+    return True
+
+def sound_info(filename, path=None, count=0):
     """Public metadata record for one sound, as served by /meta and used by the tiles."""
+    path = path or resolve_sound(filename)
+    if not path:
+        return None
     try:
         meta = sound_metadata.metadata(path)
     except OSError:
@@ -777,37 +815,47 @@ def sound_info(filename, path, count=0):
         meta,
         name=filename,
         count=count,
+        loudness=library.loudness_info(filename),
         play_url=url_for('play', filename=filename),
         cover_url=url_for('cover', filename=filename),
         meta_url=url_for('sound_meta', filename=filename),
     )
 
-@app.route('/')
-def index():
-    sort_type = request.args.get('sort', 'alpha')
+def all_sound_infos():
     stats = get_stats()
     files = []
     for f in list_sounds():
         info = sound_info(f, os.path.join(SOUNDS_DIR, f), stats.get(f, 0))
         if info:
             files.append(info)
+    return files
+
+@app.route('/')
+def index():
+    sort_type = request.args.get('sort', 'alpha')
+    files = all_sound_infos()
     if sort_type == 'pop': files.sort(key=lambda x: x['count'], reverse=True)
     else: files.sort(key=lambda x: x['name'])
-    
-    return render_template('index.html', 
-                         files=files, 
+
+    return render_template('index.html',
+                         files=files,
+                         tags=sound_search.tag_counts(files),
+                         query=request.args.get('q', ''),
+                         admin_enabled=admin_auth.enabled,
+                         search_text=sound_search.haystack,
                          vol_local=int(audio_engine.volume_local * 100),
                          vol_remote=int(audio_engine.volume_remote * 100))
 
 @app.route('/meta')
 def all_meta():
-    stats = get_stats()
-    files = []
-    for f in list_sounds():
-        info = sound_info(f, os.path.join(SOUNDS_DIR, f), stats.get(f, 0))
-        if info:
-            files.append(info)
-    return jsonify(files)
+    """All sounds; ?q= searches (words and #tags), ?tag= (repeatable) requires tags."""
+    files = all_sound_infos()
+    return jsonify(sound_search.search(files, request.args.get('q', ''), request.args.getlist('tag')))
+
+@app.route('/tags')
+def all_tags():
+    """Every search tag in use with its number of sounds."""
+    return jsonify(sound_search.tag_counts(all_sound_infos()))
 
 @app.route('/meta/<path:filename>')
 def sound_meta(filename):
@@ -850,12 +898,29 @@ def cover(filename):
     path = resolve_sound(filename)
     if not path:
         return "File not found", 404
+    # Covers can be changed in the admin area, so browsers revalidate every
+    # time (max_age=0). The ETag follows the file, and an unchanged file is
+    # answered with 304 before its cover is read and scaled again.
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "File not found", 404
+    etag = f"{st.st_mtime_ns:x}-{st.st_size:x}" + (f"-{px}" if px else "")
+    try:
+        unchanged = request.if_none_match.contains(etag) and sound_metadata.metadata(path)['has_cover']
+    except OSError:
+        return "File not found", 404
+    if unchanged:
+        response = app.response_class(status=304)
+        response.set_etag(etag)
+        response.cache_control.no_cache = True
+        return response
     try:
         art = sound_metadata.cover(path)
     except OSError:
         return "File not found", 404
     if art is None:
-        return default_cover(px, 3600)
+        return default_cover(px, 0)
     mime, data, (mtime_ns, size) = art
     if px:
         mime, data = thumbnail(data, px)
@@ -864,18 +929,14 @@ def cover(filename):
         mimetype=mime,
         etag=f"{mtime_ns:x}-{size:x}" + (f"-{px}" if px else ""),
         last_modified=mtime_ns / 1e9,
-        max_age=3600,
+        max_age=0,
     )
     response.headers['X-Cover-Source'] = 'embedded'
     return response
 
 @app.route('/play/<path:filename>')
 def play(filename):
-    if ".." in filename or filename.startswith("/"): return "Invalid filename", 400
-    path = os.path.join(SOUNDS_DIR, filename)
-    if os.path.exists(path):
-        audio_engine.play_file(path, filename)
-        update_stat(filename)
+    if play_sound(filename):
         return "Playing", 200
     return "File not found", 404
 
@@ -1018,6 +1079,11 @@ def view_stats():
         html += f"<tr><td>{k}</td><td>{v}</td></tr>"
     html += "</table><br><a href='/'>Back</a>"
     return html
+
+app.register_blueprint(create_admin_blueprint(
+    library, admin_auth, lambda name: sound_info(name, count=get_stats().get(name, 0)),
+    MAX_UPLOAD_MB * 1024 * 1024,
+))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
