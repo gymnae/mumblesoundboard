@@ -37,6 +37,13 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
     def visible(name):
         return is_visible_name(name, library.extensions()) and os.path.isfile(library.path(name))
 
+    def admin_info(name):
+        """The public record plus what only the edit page needs."""
+        info = sound_info(name)
+        if info is not None:
+            info = dict(info, trim_backups=len(library.trim_backups(name)))
+        return info
+
     def info_or_404(name):
         info = sound_info(name) if visible(name) else None
         if not info:
@@ -99,7 +106,7 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
             return error('no file in the "file" form field')
         name = library.add_upload(upload_file.stream, upload_file.filename, max_upload_bytes)
         print(f"[ADMIN] {request.admin_user} uploaded {name}")
-        return jsonify({'name': name, 'sound': sound_info(name)}), 201
+        return jsonify({'name': name, 'sound': admin_info(name)}), 201
 
     @admin.route('/api/sounds/<path:name>', methods=['PATCH'])
     def edit(name):
@@ -111,7 +118,7 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
             tag_writer.write_fields(library.path(name), fields)
             library.file_changed(name)
         print(f"[ADMIN] {request.admin_user} edited tags of {name}")
-        return jsonify({'sound': sound_info(name)})
+        return jsonify({'sound': admin_info(name)})
 
     def uploaded_image(field):
         image = request.files.get(field)
@@ -145,7 +152,7 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
             library.file_changed(name)
         action = 'removed the cover of' if data is None else 'set a new cover for'
         print(f"[ADMIN] {request.admin_user} {action} {name}")
-        return jsonify({'sound': sound_info(name)})
+        return jsonify({'sound': admin_info(name)})
 
     @admin.route('/api/sounds/<path:name>/audio')
     def audio(name):
@@ -157,6 +164,36 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
         response = send_file(io.BytesIO(data), mimetype='audio/mpeg', conditional=True, max_age=0)
         response.headers['Cache-Control'] = 'private, no-cache'
         return response
+
+    @admin.route('/api/sounds/<path:name>/waveform')
+    def sound_waveform(name):
+        """{'duration', 'peaks'} for drawing the trimmer (?points=, 10..4000)."""
+        points = request.args.get('points', '1000')
+        if not points.isdigit():
+            return error('points must be a number')
+        return jsonify(library.waveform(name, int(points)))
+
+    @admin.route('/api/sounds/<path:name>/trim', methods=['POST'])
+    def trim(name):
+        """JSON {start, end, fade_in, fade_out} in seconds. The version before
+        the cut is kept and can be brought back with /untrim."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return error('expected a JSON object')
+        library.trim(name, body.get('start'), body.get('end'), body.get('fade_in'), body.get('fade_out'))
+        print(f"[ADMIN] {request.admin_user} trimmed {name} to {body.get('start')}-{body.get('end')} s")
+        return jsonify({'sound': admin_info(name)})
+
+    @admin.route('/api/sounds/<path:name>/untrim', methods=['POST'])
+    def untrim(name):
+        masked = library.untrim(name)
+        print(f"[ADMIN] {request.admin_user} undid the last trim of {name} (trimmed version kept as {masked})")
+        return jsonify({'sound': admin_info(name), 'trimmed_id': masked})
+
+    @admin.route('/api/trims')
+    def trims():
+        """{name: number of trims that can be undone}."""
+        return jsonify(library.trim_counts())
 
     @admin.route('/api/sounds/<path:name>', methods=['DELETE'])
     def delete(name):
@@ -172,6 +209,6 @@ def create_admin_blueprint(library, auth, sound_info, max_upload_bytes):
     def restore(masked):
         name = library.restore(masked)
         print(f"[ADMIN] {request.admin_user} restored {name}")
-        return jsonify({'name': name, 'sound': sound_info(name)})
+        return jsonify({'name': name, 'sound': admin_info(name)})
 
     return admin

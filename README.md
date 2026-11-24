@@ -278,6 +278,20 @@ OIDC login. The rest of the soundboard (playing, search, `/meta`, …) stays pub
   crops the original, applies the EXIF rotation, converts colour profiles (Display P3, CMYK) to sRGB
   and shrinks the cover to at most 1000 px, never enlarging it. It is stored as JPEG, or as PNG if it
   has transparency.
+* **Trim:** `✂ TRIM` opens the sound's waveform. Drag across it to select the part to keep, drag the
+  green markers to adjust it, or type exact start and end times. Optional fade-in and fade-out
+  avoid clicks at the cut. `▶ PREVIEW` (or Space) plays the selection with its fades, only in your
+  browser. Saving cuts the file with ffmpeg in its own format:
+  * WAV and FLAC are cut losslessly.
+  * MP3, AAC (M4A), Vorbis and Opus are re-encoded once at high quality (MP3 V0, 256k AAC,
+    Vorbis q8, 192k Opus).
+  * Tags, search tags and the cover are carried over. The loudness is measured again for the
+    new audio.
+
+  The version before the cut stays next to the file as `<name>.before-trim-<UTC time>`, and
+  `↶ UNDO TRIM` brings it back with the current tags and cover. Each trim can be undone in turn.
+  The trimmed version then goes to the deleted sounds, so nothing is lost. These backups move
+  along when a sound is deleted or restored.
 * **Delete** never erases anything. The file is renamed to
   `<name>.deleted-<UTC time>` (e.g. `airhorn.mp3.deleted-20261124T101500Z`). That name no longer ends
   in an allowed extension, so the soundboard ignores it everywhere, including `/play`. The admin page
@@ -398,6 +412,11 @@ page does. Other websites cannot add it to requests made with the user's login c
   any supported image for display, with `X-Image-Width`/`X-Image-Height` of the original.
 - `GET /edit/api/sounds/<file>/audio` — the sound as MP3, normalized like a channel play, for
   listening in the browser. Not played in the channel and not counted.
+- `GET /edit/api/sounds/<file>/waveform?points=1000` — `{"duration", "peaks"}` for drawing
+  the trimmer.
+- `POST /edit/api/sounds/<file>/trim` — JSON `{"start", "end", "fade_in", "fade_out"}` in seconds.
+  `POST /edit/api/sounds/<file>/untrim` undoes the last trim. `GET /edit/api/trims` returns
+  `{name: number of trims that can be undone}`.
 - `DELETE /edit/api/sounds/<file>` — masks the file; returns `{"deleted", "id"}` (the new name).
 - `GET /edit/api/trash` — deleted sounds; `POST /edit/api/trash/<id>/restore` brings one back
   (`409` if the name is taken again or the same audio was uploaded since).

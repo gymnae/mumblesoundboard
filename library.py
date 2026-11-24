@@ -20,7 +20,19 @@ Deleting
     Never removes data: the file is renamed to ``<name>.deleted-<UTC time>``.
     That name no longer ends in an allowed extension, so every listing and
     playback path ignores it, and it can be restored by renaming it back.
+
+Trimming
+    Cuts a sound to a start/end range (optionally with fades) by re-encoding
+    it with ffmpeg in its own format; tags and cover art are carried over.
+    The version before the cut stays next to it as
+    ``<name>.before-trim-<UTC time>``, so every trim can be undone. Undoing
+    brings that version back (with the current tags) and moves the trimmed
+    one to the deleted sounds. Backups follow their sound when it is
+    deleted and restored.
 """
+import array
+import shutil
+import sys
 import json
 import math
 import os
@@ -32,8 +44,24 @@ import threading
 import time
 import unicodedata
 
+import tag_writer
+
 DELETED_MARK = '.deleted-'
 DELETED_PATTERN = re.compile(r'^(?P<name>.+)\.deleted-(?P<stamp>\d{8}T\d{6}Z)(?:-\d+)?$')
+TRIM_MARK = '.before-trim-'
+TRIM_PATTERN = re.compile(r'^(?P<name>.+)\.before-trim-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>\d+))?$')
+MIN_TRIM_SECONDS = 0.05
+# Encoder per source codec when trimming: the file keeps its format, and lossy
+# codecs are re-encoded at a quality where one more generation is inaudible.
+TRIM_ENCODERS = {
+    'mp3': ['-c:a', 'libmp3lame', '-q:a', '0'],
+    'aac': ['-c:a', 'aac', '-b:a', '256k'],
+    'alac': ['-c:a', 'alac'],
+    'flac': ['-c:a', 'flac'],
+    'vorbis': ['-c:a', 'libvorbis', '-q:a', '8'],
+    'opus': ['-c:a', 'libopus', '-b:a', '192k'],
+}
+WAVEFORM_RATE = 8000
 UPLOAD_PREFIX = '.upload-'
 # Integrated loudness needs at least one 400 ms gating block; clips shorter
 # than that are looped up to this many seconds before measuring.
@@ -103,6 +131,76 @@ def render_preview(path, audio_filter=None, timeout=120):
         detail = result.stderr.decode(errors='replace').strip().splitlines()[-1:] or ['no audio']
         raise LibraryError(f'could not render a preview: {detail[0]}', 500)
     return result.stdout
+
+
+def audio_codec(path, timeout=30):
+    """Codec name of the first audio stream (ffprobe), or None."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name',
+             '-of', 'default=noprint_wrappers=1:nokey=1', path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def trim_encoder(codec):
+    if codec in TRIM_ENCODERS:
+        return TRIM_ENCODERS[codec]
+    if codec and codec.startswith('pcm_'):
+        return ['-c:a', codec]
+    return None
+
+
+def _seconds(value, what):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise LibraryError(f'{what} must be a number of seconds')
+    if not math.isfinite(number) or number < 0:
+        raise LibraryError(f'{what} must be 0 or more seconds')
+    return number
+
+
+def trim_filter(start, end, fade_in=0.0, fade_out=0.0):
+    """ffmpeg -af chain that keeps start..end (seconds) and fades its edges."""
+    length = end - start
+    parts = [f'atrim=start={start:.6f}:end={end:.6f}', 'asetpts=PTS-STARTPTS']
+    if fade_in > 0:
+        parts.append(f'afade=t=in:st=0:d={fade_in:.6f}')
+    if fade_out > 0:
+        parts.append(f'afade=t=out:st={length - fade_out:.6f}:d={fade_out:.6f}')
+    return ','.join(parts)
+
+
+def waveform(path, points=1000, timeout=120):
+    """{'duration', 'peaks'}: the loudest sample (0..1) of each of `points`
+    equal slices, from a mono 8 kHz decode."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-nostdin', '-v', 'error', '-i', path, '-map', '0:a:0', '-ac', '1',
+             '-ar', str(WAVEFORM_RATE), '-f', 's16le', '-c:a', 'pcm_s16le', 'pipe:1'],
+            capture_output=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise LibraryError(f'could not read the audio: {e}', 500)
+    if result.returncode != 0:
+        raise LibraryError('could not read the audio', 500)
+    samples = array.array('h')
+    samples.frombytes(result.stdout[:len(result.stdout) // 2 * 2])
+    if sys.byteorder == 'big':
+        samples.byteswap()
+    count = len(samples)
+    points = max(1, min(points, count))
+    peaks = []
+    for i in range(points if count else 0):
+        chunk = samples[i * count // points:(i + 1) * count // points]
+        peaks.append(round(max(max(chunk), -min(chunk)) / 32768, 3) if chunk else 0.0)
+    return {'duration': count / WAVEFORM_RATE, 'peaks': peaks}
 
 
 def _parse_db(value):
@@ -449,18 +547,41 @@ class SoundLibrary:
         self.wake()  # analyze loudness in the background
         return name
 
+    def _require_visible(self, name):
+        if not is_visible_name(name, self.extensions()) or not os.path.isfile(self.path(name)):
+            raise LibraryError('sound not found', status=404)
+
+    def _hidden_name(self, name, mark):
+        """A free '<name><mark><UTC time>[-N]' name."""
+        stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        hidden = f'{name}{mark}{stamp}'
+        counter = 1
+        while os.path.lexists(self.path(hidden)):
+            counter += 1  # twice within one second
+            hidden = f'{name}{mark}{stamp}-{counter}'
+        return hidden
+
+    def _keep_as(self, name, hidden):
+        """Make `hidden` another name for the file `name` (which is about to be
+        replaced): a hard link, or a copy where links are not possible."""
+        try:
+            os.link(self.path(name), self.path(hidden))
+        except OSError:
+            shutil.copy2(self.path(name), self.path(hidden))
+
+    def _move_backups(self, old, new):
+        """Rename the trim backups of `old` so they belong to `new`."""
+        for backup in self.trim_backups(old):
+            os.rename(self.path(backup), self.path(new + backup[len(old):]))
+
     def delete(self, name):
-        """Mask a sound by renaming it; returns the new (hidden) name."""
+        """Mask a sound by renaming it; returns the new (hidden) name. Its trim
+        backups are renamed along with it."""
         with self.write_lock:
-            if not is_visible_name(name, self.extensions()) or not os.path.isfile(self.path(name)):
-                raise LibraryError('sound not found', status=404)
-            stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-            masked = f'{name}{DELETED_MARK}{stamp}'
-            counter = 1
-            while os.path.lexists(self.path(masked)):
-                counter += 1  # deleted twice within one second
-                masked = f'{name}{DELETED_MARK}{stamp}-{counter}'
+            self._require_visible(name)
+            masked = self._hidden_name(name, DELETED_MARK)
             os.rename(self.path(name), self.path(masked))
+            self._move_backups(name, masked)
             self._forget_files([name])
         return masked
 
@@ -500,6 +621,7 @@ class SoundLibrary:
             if existing:
                 raise DuplicateError(f'same audio as "{existing}"', existing=existing)
             os.rename(self.path(masked), self.path(name))
+            self._move_backups(masked, name)
             self._store_file(name, (*self._stamp(self.path(name)), fingerprint))
         self.wake()
         return name
@@ -511,3 +633,111 @@ class SoundLibrary:
         except OSError:
             return
         self._store_file(name, (*stamp, audio_fingerprint(self.path(name))))
+
+    # trimming
+
+    def _list_backups(self):
+        """{name: [backup, ...] oldest first} for every trim backup on disk."""
+        try:
+            entries = os.listdir(self.sounds_dir)
+        except FileNotFoundError:
+            return {}
+        found = {}
+        for entry in entries:
+            match = TRIM_PATTERN.match(entry)
+            if match and not entry.startswith('.') and os.path.isfile(self.path(entry)):
+                key = (match.group('stamp'), int(match.group('n') or 1))
+                found.setdefault(match.group('name'), []).append((key, entry))
+        return {name: [entry for _, entry in sorted(items)] for name, items in found.items()}
+
+    def trim_backups(self, name):
+        """Versions of `name` from before each trim, oldest first."""
+        return self._list_backups().get(name, [])
+
+    def trim_counts(self):
+        """{name: number of trims that can be undone} for visible sounds."""
+        extensions = self.extensions()
+        return {name: len(backups) for name, backups in self._list_backups().items()
+                if is_visible_name(name, extensions)}
+
+    def waveform(self, name, points=1000):
+        self._require_visible(name)
+        return waveform(self.path(name), max(10, min(int(points), 4000)))
+
+    def trim(self, name, start, end, fade_in=0, fade_out=0):
+        """Cut the sound to start..end seconds, with optional fades (seconds).
+        The previous version is kept as a hidden backup; returns its name."""
+        start, end = _seconds(start, 'start'), _seconds(end, 'end')
+        fade_in, fade_out = _seconds(fade_in or 0, 'fade in'), _seconds(fade_out or 0, 'fade out')
+        if end - start < MIN_TRIM_SECONDS:
+            raise LibraryError(f'the selection must be at least {MIN_TRIM_SECONDS * 1000:.0f} ms long')
+        if fade_in + fade_out > end - start + 1e-6:
+            raise LibraryError('the fades are longer than the selection')
+        with self.write_lock:
+            self._require_visible(name)
+            path = self.path(name)
+            codec = audio_codec(path)
+            encoder = trim_encoder(codec)
+            if not encoder:
+                raise LibraryError(f'cutting {codec or "this"} audio is not supported', status=415)
+            fd, tmp = tempfile.mkstemp(prefix='.trim-', suffix=os.path.splitext(name)[1], dir=self.sounds_dir)
+            os.close(fd)
+            try:
+                cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', path, '-map', '0:a:0',
+                       '-map_metadata', '-1', '-af', trim_filter(start, end, fade_in, fade_out),
+                       *encoder, tmp]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    raise LibraryError(f'cutting failed: {e}', status=500)
+                if result.returncode != 0:
+                    detail = (result.stderr.strip().splitlines() or ['ffmpeg failed'])[-1]
+                    raise LibraryError(f'cutting failed: {detail}', status=500)
+                if waveform(tmp, 1)['duration'] < MIN_TRIM_SECONDS / 2:
+                    raise LibraryError('the selection is outside the sound')
+                tag_writer.copy_tags(path, tmp)
+                with open(tmp, 'rb+') as f:
+                    os.fsync(f.fileno())
+                os.chmod(tmp, 0o644)
+                backup = self._hidden_name(name, TRIM_MARK)
+                self._keep_as(name, backup)
+                os.replace(tmp, path)  # atomic: a playing ffmpeg keeps reading the old file
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            self.file_changed(name)
+        self.wake()  # new audio, new loudness analysis
+        return backup
+
+    def untrim(self, name):
+        """Undo the last trim: the version from before it comes back with the
+        current tags, and the trimmed one goes to the deleted sounds (whose
+        hidden name is returned)."""
+        with self.write_lock:
+            self._require_visible(name)
+            backups = self.trim_backups(name)
+            if not backups:
+                raise LibraryError('there is no trim to undo', status=404)
+            backup = backups[-1]
+            self.sync()
+            fingerprint = audio_fingerprint(self.path(backup))
+            existing = fingerprint and self.find_by_fingerprint(fingerprint, exclude=name)
+            if existing:
+                raise DuplicateError(f'the untrimmed audio is also "{existing}"', existing=existing)
+            fd, tmp = tempfile.mkstemp(prefix='.trim-', suffix=os.path.splitext(name)[1], dir=self.sounds_dir)
+            os.close(fd)
+            try:
+                shutil.copy2(self.path(backup), tmp)
+                tag_writer.copy_tags(self.path(name), tmp)  # keep tag/cover edits made since the trim
+                with open(tmp, 'rb+') as f:
+                    os.fsync(f.fileno())
+                masked = self._hidden_name(name, DELETED_MARK)
+                self._keep_as(name, masked)
+                os.replace(tmp, self.path(name))
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            os.unlink(self.path(backup))  # its audio now lives on under `name`
+            self.file_changed(name)
+        self.wake()
+        return masked
